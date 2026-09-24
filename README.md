@@ -1,4 +1,4 @@
-# Checkpoint 4 — Chapéu Seletor Serverless: Observabilidade
+# Checkpoint 5 — Chapéu Seletor Serverless: Pipeline de CI/CD
 
 Pipeline serverless **event-driven** na AWS que simula o Chapéu Seletor de
 Hogwarts: um aluno é cadastrado (nome + e-mail), o sistema sorteia a casa,
