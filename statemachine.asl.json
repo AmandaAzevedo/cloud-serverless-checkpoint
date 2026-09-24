@@ -5,6 +5,7 @@
     "Processar": {
       "Type": "Map",
       "ItemsPath": "$.alunos",
+      "MaxConcurrency": 5,
       "ItemProcessor": {
         "ProcessorConfig": { "Mode": "INLINE" },
         "StartAt": "ClassificarComIA",
@@ -20,8 +21,8 @@
                   {
                     "role": "user",
                     "content": [
-                      { "text": "Você é o Chapéu Seletor de Hogwarts. Em UMA frase curta em português, diga a casa do aluno (use exatamente um destes nomes: Grifinória, Sonserina, Corvinal ou Lufa-Lufa) e o motivo. Comece a frase pelo nome da casa. Nome do aluno:" },
-                      { "text.$": "$.nome" }
+                      { "text": "Você é o Chapéu Seletor de Hogwarts. Em UMA frase curta em português, escolha a casa que melhor combina com o perfil (use exatamente um destes nomes: Grifinória, Sonserina, Corvinal ou Lufa-Lufa) e explique o motivo. Comece a frase pelo nome da casa. Nome e características do aluno:" },
+                      { "text.$": "States.Format('{} — {}', $.nome, $.perfil)" }
                     ]
                   }
                 ],
@@ -59,7 +60,7 @@
             "Parameters": {
               "nome.$": "$.nome",
               "email.$": "$.email",
-              "indice.$": "States.MathRandom(0, 3)"
+              "indice.$": "States.MathRandom(0, 4)"
             },
             "Next": "EscolherCasaFallback"
           },
@@ -129,7 +130,7 @@
             },
             "ResultPath": null,
             "Retry": [
-              { "ErrorEquals": ["Ses.ThrottlingException", "Lambda.ServiceException"], "IntervalSeconds": 1, "MaxAttempts": 2, "BackoffRate": 2.0 }
+              { "ErrorEquals": ["Ses.ThrottlingException", "Ses.ServiceUnavailableException", "States.Timeout"], "IntervalSeconds": 1, "MaxAttempts": 2, "BackoffRate": 2.0 }
             ],
             "Catch": [
               { "ErrorEquals": ["States.ALL"], "ResultPath": "$.erro", "Next": "DesfazerCadastro" }
@@ -150,9 +151,97 @@
               { "ErrorEquals": ["DynamoDB.InternalServerError", "DynamoDB.ThrottlingException", "DynamoDB.ProvisionedThroughputExceededException"], "IntervalSeconds": 1, "MaxAttempts": 3, "BackoffRate": 2.0 }
             ],
             "Catch": [
-              { "ErrorEquals": ["States.ALL"], "ResultPath": "$.erro", "Next": "Sucesso" }
+              { "ErrorEquals": ["States.ALL"], "ResultPath": "$.erro", "Next": "AtualizacaoParaDLQ" }
+            ],
+            "Next": "PrepararEvento"
+          },
+          "PrepararEvento": {
+            "Type": "Pass",
+            "Comment": "Cria um evento de domínio estável e sem a justificativa completa do modelo.",
+            "Parameters": {
+              "tipo": "AlunoSelecionado",
+              "versao": "1",
+              "email.$": "$.email",
+              "nome.$": "$.nome",
+              "casa.$": "$.casa",
+              "origem.$": "$.origem",
+              "ocorridoEm.$": "$$.State.EnteredTime"
+            },
+            "ResultPath": "$.evento",
+            "Next": "PublicarEvento"
+          },
+          "PublicarEvento": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sns:publish",
+            "Comment": "Coreografia: consumidores reagem sem aumentar o acoplamento do caminho HTTP.",
+            "Parameters": {
+              "TopicArn": "${EventsTopicArn}",
+              "Subject": "AlunoSelecionado",
+              "Message.$": "States.JsonToString($.evento)"
+            },
+            "ResultPath": null,
+            "Retry": [
+              { "ErrorEquals": ["Sns.Throttled", "States.TaskFailed"], "IntervalSeconds": 1, "MaxAttempts": 3, "BackoffRate": 2.0 }
+            ],
+            "Catch": [
+              { "ErrorEquals": ["States.ALL"], "ResultPath": "$.erro", "Next": "EventoParaDLQ" }
             ],
             "Next": "Sucesso"
+          },
+          "EventoParaDLQ": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage",
+            "Parameters": {
+              "QueueUrl": "${DlqUrl}",
+              "MessageBody.$": "States.JsonToString($)"
+            },
+            "ResultPath": null,
+            "Retry": [
+              { "ErrorEquals": ["Sqs.SqsException", "States.TaskFailed"], "IntervalSeconds": 1, "MaxAttempts": 2, "BackoffRate": 2.0 }
+            ],
+            "Next": "EventoPendente"
+          },
+          "EventoPendente": {
+            "Type": "Pass",
+            "Parameters": {
+              "nome.$": "$.nome",
+              "email.$": "$.email",
+              "casa.$": "$.casa",
+              "justificativa.$": "$.justificativa",
+              "origem.$": "$.origem",
+              "status": "pendente",
+              "notificado": true,
+              "motivo": "Cadastro concluído; publicação do evento requer reprocessamento."
+            },
+            "End": true
+          },
+          "AtualizacaoParaDLQ": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage",
+            "Comment": "O e-mail foi entregue, mas a confirmação no DynamoDB falhou; registra para reconciliação.",
+            "Parameters": {
+              "QueueUrl": "${DlqUrl}",
+              "MessageBody.$": "States.JsonToString($)"
+            },
+            "ResultPath": null,
+            "Retry": [
+              { "ErrorEquals": ["Sqs.SqsException", "States.TaskFailed"], "IntervalSeconds": 1, "MaxAttempts": 2, "BackoffRate": 2.0 }
+            ],
+            "Next": "NotificacaoPendente"
+          },
+          "NotificacaoPendente": {
+            "Type": "Pass",
+            "Parameters": {
+              "nome.$": "$.nome",
+              "email.$": "$.email",
+              "casa.$": "$.casa",
+              "justificativa.$": "$.justificativa",
+              "origem.$": "$.origem",
+              "status": "pendente",
+              "notificado": true,
+              "motivo": "E-mail enviado, mas a confirmação no banco requer reconciliação."
+            },
+            "End": true
           },
           "DesfazerCadastro": {
             "Type": "Task",
@@ -176,9 +265,12 @@
             "Resource": "arn:aws:states:::sqs:sendMessage",
             "Parameters": {
               "QueueUrl": "${DlqUrl}",
-              "MessageBody.$": "$"
+              "MessageBody.$": "States.JsonToString($)"
             },
             "ResultPath": null,
+            "Retry": [
+              { "ErrorEquals": ["Sqs.SqsException", "States.TaskFailed"], "IntervalSeconds": 1, "MaxAttempts": 2, "BackoffRate": 2.0 }
+            ],
             "Next": "CadastroCancelado"
           },
           "CadastroCancelado": {

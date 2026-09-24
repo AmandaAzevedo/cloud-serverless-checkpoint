@@ -1,3 +1,6 @@
 region = "us-east-1"
+# Mantido por compatibilidade com os recursos e o state dos checkpoints.
 prefix = "chapeu-seletor-cp3"
 sender_email = "your-email@provider.com"
+bedrock_model_id = "amazon.nova-lite-v1:0"
+allowed_origins  = ["https://example.com"]

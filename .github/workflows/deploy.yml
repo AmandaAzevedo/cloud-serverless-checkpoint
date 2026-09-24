@@ -11,10 +11,17 @@ on:
       - "statemachine.asl.json"
       - "terraform/**"
       - ".github/workflows/**"
+      - "test_lambda_function.py"
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: serverless-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   AWS_REGION: us-east-1
@@ -26,6 +33,7 @@ jobs:
   test:
     name: Testes unitários
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -37,13 +45,40 @@ jobs:
       - name: Rodar testes
         run: python -m unittest -v
 
+      - name: Validar JSON da state machine
+        run: python -m json.tool statemachine.asl.json >/dev/null
+
+  validate:
+    name: Validar Terraform
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Conferir formatação
+        run: terraform fmt -check -recursive
+
+      - name: Inicializar providers sem backend
+        working-directory: terraform
+        run: terraform init -backend=false -input=false
+
+      - name: Validar configuração
+        working-directory: terraform
+        run: terraform validate
+
   # ---------------------------------------------------------------------------
   # 2) DEPLOY — só roda se os testes passarem.
   # ---------------------------------------------------------------------------
   deploy:
     name: Deploy (Terraform)
-    needs: test
+    needs: [test, validate]
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
     env:
       TF_VAR_sender_email: ${{ secrets.SENDER_EMAIL }}
       TF_VAR_app_version: ${{ github.sha }}
@@ -87,16 +122,15 @@ jobs:
 
       - name: Terraform apply
         working-directory: terraform
-        run: terraform apply -auto-approve -input=false
+        run: terraform apply -auto-approve -input=false -lock-timeout=5m
 
       - name: Resumo do deploy
-        working-directory: terraform
         run: |
           {
             echo "### Deploy concluído :rocket:"
             echo ""
             echo "- **Commit implantado:** \`${{ github.sha }}\`"
-            echo "- **Endpoint:** $(terraform output -raw selecionar_endpoint 2>/dev/null || echo n/d)"
-            echo "- **Versão:** $(terraform output -raw function_url_base 2>/dev/null || echo n/d)v1/versao"
-            echo "- **Dashboard:** $(terraform output -raw dashboard_url 2>/dev/null || echo n/d)"
+            echo "- **Região:** ${AWS_REGION}"
+            echo "- Testes e validação do Terraform concluídos antes do deploy."
+            echo "- URLs omitidas intencionalmente dos logs públicos; consulte os outputs em ambiente autenticado."
           } >> "$GITHUB_STEP_SUMMARY"
