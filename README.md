@@ -1,269 +1,300 @@
-# Checkpoint 5 — Chapéu Seletor Serverless: Pipeline de CI/CD
+# Chapéu Seletor Serverless — arquitetura event-driven com IA
 
-Pipeline serverless **event-driven** na AWS que simula o Chapéu Seletor de
-Hogwarts: um aluno é cadastrado (nome + e-mail), o sistema sorteia a casa,
-persiste o resultado e **notifica por e-mail**. Toda a lógica é orquestrada por
-**Step Functions** com integrações nativas (sem Lambda no fluxo).
+Projeto final da disciplina de **Serverless Computing e Arquiteturas Event-Driven**.
+A solução recebe um aluno e suas características, usa **Amazon Bedrock** para
+escolher uma casa de Hogwarts, persiste o resultado, envia a notificação e
+publica um evento de domínio para consumidores desacoplados.
 
-O foco deste checkpoint é a **observabilidade**: o serviço foi instrumentado com
-**logging estruturado** e **métricas customizadas** no **AWS CloudWatch**, com um
-**dashboard** e uma **análise crítica de performance e custo** com otimizações
-fundamentadas em dados reais.
+O repositório consolida funções serverless, eventos, orquestração,
+observabilidade, segurança, infraestrutura como código e CI/CD em uma entrega
+única.
 
-## Sumário
-- [Arquitetura](#arquitetura)
-- [API (endpoints)](#api-endpoints)
-- [Código da Lambda](#código-da-lambda-lambda_functionpy)
-- [Fluxo do Step Functions](#fluxo-do-step-functions-statemachineasljson)
-- [Infraestrutura (Terraform)](#infraestrutura-terraform)
-- [Observabilidade (Checkpoint 4)](#observabilidade-checkpoint-4)
-- [Evidências (prints)](#evidências-prints)
-- [Análise crítica e otimizações](#análise-crítica-de-performance-e-custo)
-- [Como rodar, testar e implantar](#como-rodar-testar-e-implantar)
-- [CI/CD — deploy automático](#cicd--deploy-automático)
-- [Segurança](#segurança)
-- [Estrutura do repositório](#estrutura-do-repositório)
+## Arquitetura final
 
-## Arquitetura
+![Diagrama da arquitetura](docs/arquitetura.svg)
 
-![Arquitetura](docs/arquitetura.svg)
-
-**Provedor:** AWS — **Lambda** (HTTP), **Step Functions** (orquestração),
-**DynamoDB** (dados), **SQS** (dead-letter queue), **SES** (e-mail) e
-**CloudWatch** (observabilidade).
-
-Fluxo de uma seleção:
-
-1. A **Lambda** recebe o HTTP e inicia a execução **síncrona** do Step Functions.
-2. O Step Functions **sorteia** a casa, atribui um **lema**, **persiste** no
-   DynamoDB (e-mail único) e **notifica** por e-mail (SES).
-3. Se o e-mail falhar, faz **rollback** (desfaz o cadastro) e envia a mensagem
-   para a **DLQ**.
-4. A Lambda mede a latência, **loga** de forma estruturada e **emite métricas**.
-
-## API (endpoints)
-
-A mesma Function URL atende dois caminhos:
-
-| Método | Caminho | Descrição |
-|---|---|---|
-| `POST` | `/v1/selecionar` | Cadastra 1 aluno (`{"nome","email"}`) ou vários (`{"alunos":[...]}`) |
-| `GET`  | `/v1/alunos` | Lista os alunos cadastrados |
-| `GET`  | `/v1/versao` | Mostra a versão e o **commit** implantado (verifica se o deploy funcionou) |
-
-Regras: **e-mail obrigatório** e **único**; se o e-mail não puder ser enviado, o
-cadastro é **cancelado** (rollback).
-
-## Código da Lambda (`lambda_function.py`)
-
-Uma **única função** (`lambda_handler`) roteia por caminho + método:
-
-- **`_selecionar(event)`** — valida a entrada, chama `StartSyncExecution` no Step
-  Functions, mede a **latência**, e emite **log estruturado** + **métricas** por
-  status (`Cadastros`, `Duplicados`, `Cancelados`) e por casa (`SelecoesPorCasa`).
-- **`_listar()`** — faz `Scan` no DynamoDB e emite métricas `Consultas` /
-  `AlunosNaBase`.
-- **Instrumentação** (núcleo do checkpoint):
-  - `_log(evento, **campos)` → um log JSON por evento.
-  - `_metricas(valores, dimensoes, unidades)` → métricas no formato **EMF**.
-
-Sem dependências externas — apenas a biblioteca padrão do Python + `boto3` (já no
-runtime da Lambda).
-
-## Fluxo do Step Functions (`statemachine.asl.json`)
-
-State machine **Express**, do tipo **Map** (processa lote de alunos), com estas
-etapas por aluno:
-
-| Estado | Tipo | O que faz |
-|---|---|---|
-| `Sortear` → `EscolherCasa` | Pass | Sorteia a casa (`States.MathRandom` + `ArrayGetItem`) |
-| `RamificarPorCasa` + `Lema*` | Choice/Pass | Atribui o lema conforme a casa |
-| `Persistir` | Task | `dynamodb:putItem` com `attribute_not_exists(email)` (idempotência) |
-| `Notificar` | Task | `ses:sendEmail`; **Retry** e, se falhar, `Catch` → rollback |
-| `MarcarNotificado` | Task | `dynamodb:updateItem` → `notificado=true` (sucesso) |
-| `DesfazerCadastro` | Task | **Rollback** `dynamodb:deleteItem` (falha de e-mail) |
-| `NotificacaoParaDLQ` | Task | `sqs:sendMessage` → DLQ |
-| `Sucesso` / `EmailDuplicado` / `CadastroCancelado` | Pass | Resultado final por aluno |
-
-Conceitos demonstrados: **orquestração na ordem correta**, **idempotência**,
-**retry** com backoff, **dead-letter queue** e **rollback** (compensação/saga).
-
-## Infraestrutura (Terraform)
-
-Toda a infra é definida em `terraform/` (state remoto no **S3**):
-
-| Arquivo | Conteúdo |
-|---|---|
-| `main.tf` | DynamoDB, SQS DLQ, SES, Step Functions (+IAM), Lambda (+Function URL/IAM), **dashboard CloudWatch** |
-| `locals.tf` | Definição do **dashboard** (widgets das métricas) |
-| `variables.tf` | `region`, `prefix`, `allowed_origins`, `sender_email` |
-| `outputs.tf` | `selecionar_endpoint`, `list_endpoint`, `state_machine_arn`, `dlq_url`, **`dashboard_url`** |
-| `backend.tf.example` | Modelo do backend S3 (o `backend.tf` real fica fora do Git) |
-
-**IAM mínimo (least privilege):** o Step Functions só pode `PutItem/UpdateItem/
-DeleteItem` na tabela, `SendMessage` na DLQ e `SendEmail`; a Lambda só pode
-`StartSyncExecution` e `Scan`.
-
-## Observabilidade (Checkpoint 4)
-
-### 1. Logging estruturado (JSON)
-Cada evento vira um log JSON com campos padronizados — ex.:
-`{"evento":"selecao_processada","latencia_ms":82,"cadastrados":0,"duplicados":1,...}`.
-Isso permite consultar e agregar no **CloudWatch Logs Insights**.
-
-### 2. Métricas customizadas (EMF)
-Emitidas no próprio log (**Embedded Metric Format**, sem chamadas extras à API),
-no namespace **`ChapeuSeletor`**: `Cadastros`, `Duplicados`, `Cancelados`,
-`LatenciaFluxoMs`, `SelecoesPorCasa` (por casa), `Consultas`, `AlunosNaBase`,
-`FluxoFalhou`.
-
-### 3. Métricas nativas
-Lambda (`Invocations`, `Errors`, `Duration`), Step Functions
-(`ExecutionsStarted/Succeeded/Failed`, `ExecutionTime`) e SQS (DLQ).
-
-### 4. Dashboard CloudWatch
-Provisionado por Terraform (`chapeu-seletor-cp3-observabilidade`), reunindo todas
-as métricas acima. A URL é o output `dashboard_url`.
-
-### Como visualizar
-Console → CloudWatch → **Logs Insights**, log group
-`/aws/lambda/chapeu-seletor-cp3-api`:
-
-```
-fields @timestamp, evento, cadastrados, duplicados, cancelados, latencia_ms
-| filter evento = "selecao_processada"
-| sort @timestamp desc | limit 20
+```mermaid
+flowchart LR
+    U[Cliente HTTP] --> L[AWS Lambda<br/>API e validação]
+    L -->|StartSyncExecution| SF[AWS Step Functions Express]
+    SF --> B[Amazon Bedrock]
+    B -. falha .-> F[Fallback MathRandom]
+    B --> D[(DynamoDB)]
+    F --> D
+    D --> E[Amazon SES]
+    E -. falha .-> R[Rollback]
+    R --> DLQ[[SQS DLQ]]
+    E --> SNS[Amazon SNS<br/>AlunoSelecionado]
+    SNS --> AQ[[SQS Auditoria]]
+    L --> CW[CloudWatch<br/>logs, métricas e alarmes]
+    SF --> CW
+    GH[GitHub Actions] -->|testes + Terraform| AWS[AWS]
 ```
 
-## Evidências (prints)
+### Fluxo ponta a ponta
 
-Screenshots que comprovam logs e métricas (em [`docs/prints/`](docs/prints/)):
+1. `POST /v1/selecionar` recebe um aluno ou um lote de até 25 alunos.
+2. A Lambda valida e normaliza a entrada e inicia um **Express Workflow
+   síncrono**.
+3. O estado `Map` processa até cinco alunos em paralelo para limitar pressão
+   sobre Bedrock e SES.
+4. O Bedrock classifica o perfil e devolve casa + justificativa. Erro, timeout ou
+   resposta sem uma casa reconhecível aciona o fallback aleatório.
+5. O DynamoDB grava condicionalmente por e-mail; a condição torna o comando
+   idempotente.
+6. O SES envia o resultado. Se falhar, a Step Functions executa a compensação
+   (remove o cadastro) e registra a ocorrência na DLQ.
+7. Após o sucesso, o fluxo publica `AlunoSelecionado` no SNS. A fila de auditoria
+   recebe o evento de modo assíncrono e outros consumidores podem ser adicionados
+   sem mudar o caminho principal.
+8. Logs estruturados, métricas EMF, dashboard e alarmes ficam no CloudWatch.
 
-**Dashboard CloudWatch** — métricas de negócio, latência, Lambda, Step Functions,
-seleções por casa e DLQ, todas com dados reais:
+## Rastreabilidade dos checkpoints
 
-![Dashboard](docs/prints/dashboard.png)
+| Entrega | Requisito principal | Evidência neste repositório |
+|---|---|---|
+| **Checkpoint 3** | Fluxo ordenado, idempotência, retry e DLQ | `statemachine.asl.json`, escrita condicional no DynamoDB, retries, compensação e SQS DLQ |
+| **Checkpoint 4** | Logs, métricas, prints e 2–3 otimizações fundamentadas | EMF/logs na Lambda, dashboard/alarmes no Terraform, `docs/prints/` e análise abaixo |
+| **Checkpoint 5** | CI/CD automático e prova da execução | `.github/workflows/deploy.yml`, validações antes do apply e print do Actions |
+| **Projeto final** | Arquitetura integrada com IA e justificativas | Bedrock + fallback, SNS/SQS, diagrama, decisões técnicas e roteiro de vídeo |
 
-**Logs estruturados (CloudWatch Logs Insights)** — cada evento vira uma linha JSON
-consultável; note o contraste de `latencia_ms` (baixa sem envio, alta quando há
-falha de e-mail):
+A implementação usa serviços equivalentes da AWS, opção permitida pelos
+enunciados: Step Functions no lugar de Cloud Workflows e CloudWatch no lugar de
+Cloud Logging/Monitoring.
 
-![Logs Insights](docs/prints/logs-insights.png)
+## Orquestração x coreografia
 
-## Análise crítica de performance e custo
+Esta separação é a principal decisão arquitetural do projeto:
 
-Baseada em **métricas reais** coletadas no CloudWatch (8 seleções: 1 cadastro,
-1 duplicado, 6 cancelados + 4 consultas).
+| Abordagem | Onde foi usada | Por quê |
+|---|---|---|
+| **Orquestração** | Bedrock → DynamoDB → SES → compensação | O caminho crítico exige ordem, retry, estado e rollback explícitos. A Step Functions deixa essas regras visíveis e auditáveis. |
+| **Coreografia** | SNS `AlunoSelecionado` → SQS auditoria | O tempo de execução dos consumidores não deve ficar acoplado ao produtor. Novos assinantes podem reagir ao evento de forma independente. |
 
-| Métrica | Valor |
-|---|---|
+Usar somente coreografia no caminho crítico dificultaria enxergar e compensar
+falhas. Usar somente orquestração faria cada novo consumidor exigir alteração
+do workflow.
+
+## Decisões técnicas
+
+- **Uma Lambda fina na borda.** Centraliza roteamento e validação HTTP, mas
+  deixa a regra de negócio no workflow. Isso reduz código de integração e cold
+  starts adicionais.
+- **Step Functions Express síncrono.** O cliente recebe a seleção na mesma
+  chamada, algo apropriado para a demonstração. O trade-off é manter a Lambda
+  aguardando; em grande escala, a alternativa seria `202 Accepted` + consulta de
+  status ou callback.
+- **Integrações nativas.** Bedrock, DynamoDB, SES, SNS e SQS são chamados sem
+  Lambdas intermediárias, reduzindo código operacional e superfície de falha.
+- **IA com degradação graciosa.** O modelo agrega uma justificativa baseada nas
+  características, mas não é ponto único de falha. `Catch` e validação da
+  resposta encaminham para um sorteio entre as quatro casas.
+- **Idempotência no armazenamento.** E-mail é a chave do DynamoDB e
+  `attribute_not_exists(email)` impede duplicidade mesmo sob concorrência.
+- **Saga por compensação.** Se o e-mail falha depois da escrita, o cadastro é
+  removido. Se uma confirmação ou evento fica pendente, a DLQ guarda contexto
+  para reconciliação sem declarar um sucesso falso.
+- **DynamoDB sob demanda.** `PAY_PER_REQUEST` evita capacidade ociosa e combina
+  com a carga pequena e irregular de um projeto acadêmico.
+- **Terraform.** Infraestrutura reproduzível, revisável e com state remoto no S3.
+
+## API
+
+| Método | Caminho | Finalidade |
+|---|---|---|
+| `POST` | `/v1/selecionar` | Classifica um aluno ou lote |
+| `GET` | `/v1/alunos` | Lista os registros persistidos |
+| `GET` | `/v1/versao` | Mostra versão e commit implantados |
+
+Exemplo individual:
+
+```bash
+curl -X POST "$FUNCTION_URL/v1/selecionar" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "nome": "Amanda",
+    "email": "amanda@example.com",
+    "caracteristicas": "curiosa, leal e gosta de resolver problemas"
+  }'
+```
+
+Exemplo em lote:
+
+```json
+{
+  "alunos": [
+    {"nome": "Ana", "email": "ana@example.com", "caracteristicas": "corajosa"},
+    {"nome": "Bia", "email": "bia@example.com", "caracteristicas": "criativa e estudiosa"}
+  ]
+}
+```
+
+Restrições: nome e e-mail obrigatórios, e-mail normalizado em minúsculas,
+máximo de 25 alunos por chamada e 500 caracteres de perfil.
+
+## Resiliência e consistência
+
+- Retry com backoff apenas antes do `Catch` nas integrações remotas.
+- Fallback local quando a IA está indisponível ou responde fora do contrato.
+- Escrita condicional contra duplicidade.
+- Rollback do DynamoDB quando a notificação falha.
+- DLQ com retenção de 14 dias para falhas que exigem intervenção.
+- Resultado `pendente` quando o e-mail foi entregue, mas uma etapa posterior
+  precisa de reconciliação.
+- Limite de concorrência no `Map` para reduzir throttling e controlar custo.
+
+## Observabilidade
+
+A Lambda escreve logs JSON e métricas no formato **Embedded Metric Format**,
+sem chamada adicional à API do CloudWatch.
+
+Métricas de negócio:
+
+- `Cadastros`, `Duplicados`, `Cancelados` e `Pendentes`;
+- `SelecoesPorCasa`;
+- `LatenciaFluxoMs` e `FluxoFalhou`;
+- `Consultas` e `AlunosNaBase`.
+
+O Terraform cria o dashboard e alarmes para erros não tratados da Lambda e
+mensagens visíveis na DLQ. O log da Step Functions não inclui os dados de
+execução, evitando copiar nome, e-mail e perfil para o CloudWatch.
+
+As imagens em [`docs/prints/`](docs/prints/) registram as evidências coletadas
+durante o checkpoint de observabilidade. Depois do deploy final, recomenda-se
+atualizar ao menos os prints do workflow, da Step Functions com Bedrock e do
+dashboard com a métrica `Pendentes`.
+
+### Análise crítica de performance e custo
+
+A medição do Checkpoint 4 foi feita antes das otimizações finais, com oito
+seleções e quatro consultas. Esses valores são evidência histórica, não uma
+promessa de desempenho para toda carga:
+
+| Indicador observado | Valor |
+|---|---:|
 | Invocações da Lambda | 44 |
-| Duração da Lambda (média / máx) | 1.178 ms / 6.106 ms |
-| Latência do fluxo síncrono (média / máx) | 3.216 ms / 5.962 ms |
-| Tempo de execução do Step Functions (média) | 1.904 ms |
-| Latência — **duplicado** (sem envio) | **82 ms** |
-| Latência — **cancelado** (falha de e-mail) | **~3.300 ms** |
-| Mensagens enviadas à DLQ | 14 |
+| Duração da Lambda — média / máxima | 1.178 ms / 6.106 ms |
+| Latência do fluxo — média / máxima | 3.216 ms / 5.962 ms |
+| Tempo médio da Step Functions | 1.904 ms |
+| Caminho duplicado, sem envio de e-mail | 82 ms |
+| Caminho cancelado por falha de e-mail | aproximadamente 3.300 ms |
 
-**Performance:** a latência é dominada pelo **caminho de falha de e-mail** —
-82 ms vs ~3.300 ms (40x). A causa é o `Retry` do `Notificar` sobre um erro
-**permanente** (`Ses.MessageRejectedException`), que nunca teria sucesso.
+O principal gargalo foi o retry de um erro permanente do SES. Como a execução
+é síncrona, a espera era faturada simultaneamente na Lambda e na Step Functions
+Express; o rollback também acrescentava uma segunda escrita no DynamoDB.
 
-**Custo:** no modelo **síncrono**, cada segundo do fluxo é cobrado na **Lambda**
-**e** no **Step Functions Express** (ambos por tempo) — os ~3 s de retry inútil
-custam em dobro. E cada cancelado faz `putItem` + `deleteItem` (o dobro de
-escritas no DynamoDB).
+### Otimizações fundamentadas
 
-### Otimizações propostas
+1. **Repetir somente falhas transitórias do SES — implementada.** O workflow
+   repete throttling, indisponibilidade e timeout, mas envia rejeições permanentes
+   diretamente para compensação. A expectativa baseada na amostra é reduzir o
+   caminho de falha de cerca de 3,3 s para centenas de milissegundos.
+2. **Controlar paralelismo e desacoplar consumidores — implementada.** O `Map`
+   limita a concorrência a cinco, reduzindo throttling no Bedrock/SES, e efeitos
+   posteriores consomem `AlunoSelecionado` por SNS/SQS sem bloquear pelo tempo de
+   execução de cada consumidor.
+3. **Migrar a API para aceitação assíncrona em maior escala — proposta.** Um
+   `202 Accepted` com identificador e consulta de status eliminaria a espera
+   faturada da Lambda. Não foi adotado aqui porque a resposta imediata simplifica
+   a demonstração e os testes do professor; o trade-off é maior latência/custo
+   por requisição longa.
 
-1. **Não repetir erros permanentes do SES.** Restringir o `Retry` do `Notificar`
-   a erros transitórios (throttling/serviço). *Impacto:* latência da falha de
-   **~3,3 s → ~0,3 s**; corta tempo faturado em Lambda **e** Step Functions.
-2. **Notificar antes de persistir.** Reordenar para `Sortear → Notificar →
-   Persistir` elimina o rollback (`putItem` + `deleteItem`). *Impacto:* **−50%**
-   de escritas no DynamoDB no caminho de falha.
-3. **Reduzir o custo do bloqueio síncrono.** Execução assíncrona (`202 Accepted`)
-   em lotes, *tuning* de memória (Power Tuning) e retenção de logs. *Impacto:*
-   Lambda deixa de faturar a espera; controla o custo de observabilidade.
-
-## Como rodar, testar e implantar
-
-**Testes locais** (sem nuvem):
-
-    python3 -m unittest -v
-
-**Deploy** (Terraform + AWS CLI configurado):
-
-    cd terraform
-    cp backend.tf.example backend.tf   # ajuste o nome do bucket (state no S3)
-    # em terraform.tfvars, defina sender_email = "seu-email-verificado@dominio.com"
-    terraform init
-    terraform apply
-
-**Testar na nuvem:**
-
-    curl -X POST "<selecionar_endpoint>" -H "Content-Type: application/json" \
-      -d '{"nome":"Amanda","email":"seu-email-verificado@dominio.com"}'
-    curl "<list_endpoint>"
-
-**Passos manuais (uma vez):** verificar o remetente no **SES** e habilitar o
-acesso público da **Function URL** (Auth NONE) no Console.
-
-## CI/CD — deploy automático
-
-O deploy é **100% automatizado** com **GitHub Actions**
-([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)). A cada `push`
-na `main` que altere o código, o fluxo ou a infraestrutura, o pipeline roda em
-dois estágios:
-
-1. **`test`** — instala o Python e roda os testes unitários (`python -m unittest`).
-   Se algum falhar, o deploy **não** acontece.
-2. **`deploy`** (só se os testes passarem) — configura as credenciais AWS a partir
-   dos **Secrets**, gera o `backend.tf` (a partir do Secret do bucket) e executa
-   `terraform init → validate → apply`. O commit implantado é injetado na Lambda
-   (`TF_VAR_app_version = github.sha`).
-
-**Credenciais** vêm de *GitHub Secrets* (`AWS_ACCESS_KEY_ID`,
-`AWS_SECRET_ACCESS_KEY`, `TF_STATE_BUCKET`, `SENDER_EMAIL`) — nunca do código. O
-usuário IAM usado tem uma **policy mínima**, escopada aos recursos do projeto.
-
-### Evidência do deploy
-
-Execução do pipeline no GitHub Actions (jobs `test` e `deploy` verdes):
-
-![GitHub Actions](docs/prints/github-actions.png)
-
-
-**Verificação automática pelo endpoint de versão:** o `GET /v1/versao` devolve o
-**commit** que está de fato rodando na nuvem. Basta comparar com o SHA do último
-commit / do log do Actions:
-
-    curl "<function_url>/v1/versao"
-    # {"versao":"1.0.0","commit":"<sha-do-ultimo-commit>","lambda_version":"$LATEST",...}
-
-Se o `commit` do endpoint == o SHA do commit no GitHub == o "Commit implantado" no
-resumo do job, o deploy automático está comprovadamente funcionando.
+Uma quarta evolução seria paginar `GET /v1/alunos` na própria API, com
+`limit/nextToken`, evitando carregar toda a tabela em memória quando o volume
+deixar de ser acadêmico.
 
 ## Segurança
 
-- Nenhuma credencial, chave, `.json`/`.env` ou o `backend.tf`/`terraform.tfvars`
-  (com Account ID / dados sensíveis) é versionado — ver [`.gitignore`](.gitignore).
-- IAM por serviço com privilégio mínimo.
-- Logs/métricas registram apenas dados de negócio (nome, e-mail, casa).
+- Nenhuma chave, credencial, `.env`, `*.tfvars`, state ou `backend.tf` é
+  versionado; confira [`.gitignore`](.gitignore).
+- O CI recebe credenciais e parâmetros apenas por GitHub Secrets.
+- Endpoints e identificadores do ambiente são outputs sensíveis do Terraform e
+  não são impressos no resumo público do GitHub Actions. A URL ativa deve ser
+  enviada somente no campo privado de comentários do Canvas.
+- IAM separa a Lambda da Step Functions e restringe ações aos recursos do
+  projeto sempre que o serviço permite.
+- DynamoDB e filas SQS usam criptografia em repouso.
+- O payload HTTP tem formato, tamanho e e-mail validados; erros internos não são
+  devolvidos ao cliente.
+- Dados pessoais não são incluídos nos logs de execução da Step Functions.
+- A Function URL usa `AuthType=NONE` apenas por ser uma demonstração pública.
+  Em produção, a borda deve migrar para API Gateway com autorizador e rate
+  limiting, ou para Function URL com `AWS_IAM`.
 
-## Estrutura do repositório
 
+## Testes e validação local
+
+Pré-requisitos: Python 3.12 e Terraform 1.5 ou superior.
+
+```bash
+python3 -m unittest -v
+python3 -m json.tool statemachine.asl.json >/dev/null
+terraform fmt -check -recursive
+terraform -chdir=terraform init -backend=false
+terraform -chdir=terraform validate
 ```
+
+Os testes são locais e usam mocks; não consomem recursos AWS nem exigem
+credenciais.
+
+## Deploy manual
+
+Pré-requisitos na conta AWS:
+
+1. acesso ao modelo Amazon Nova Lite no Bedrock, na região configurada;
+2. remetente verificado no SES e, enquanto a conta estiver no sandbox,
+   destinatários também verificados;
+3. bucket S3 privado para o state do Terraform;
+4. AWS CLI autenticada com permissões para provisionar os recursos.
+
+```bash
+cd terraform
+cp backend.tf.example backend.tf
+cp terraform.tfvars.example terraform.tfvars
+# Edite somente os arquivos locais acima; ambos estão ignorados pelo Git.
+terraform init
+terraform plan
+terraform apply
+```
+
+O `sender_email` é obrigatório e validado pelo Terraform. Após o apply, use os
+outputs `selecionar_endpoint`, `list_endpoint`, `version_endpoint` e
+`dashboard_url`. Como são sensíveis, consulte um valor individual em ambiente
+autenticado, por exemplo: `terraform output -raw selecionar_endpoint`.
+
+## CI/CD
+
+O workflow [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) executa:
+
+1. testes unitários e validação do JSON da state machine;
+2. `terraform fmt`, inicialização sem backend e `terraform validate`;
+3. deploy somente em `push` na `main` ou disparo manual, depois das validações;
+4. resumo com commit, endpoints e dashboard.
+
+Secrets necessários:
+
+| Secret | Uso |
+|---|---|
+| `AWS_ACCESS_KEY_ID` | Autenticação do deploy |
+| `AWS_SECRET_ACCESS_KEY` | Autenticação do deploy |
+| `TF_STATE_BUCKET` | Bucket privado do state remoto |
+| `SENDER_EMAIL` | Remetente verificado no SES |
+
+
+## Estrutura
+
+```text
 .
-├── lambda_function.py          # Lambda (endpoints + instrumentação)
-├── statemachine.asl.json       # fluxo do Step Functions
-├── test_lambda_function.py     # testes unitários
-├── requirements.txt
-├── terraform/                  # infraestrutura (IaC) + dashboard
-│   ├── main.tf · locals.tf · variables.tf · outputs.tf
-│   └── backend.tf.example
-└── docs/
-    ├── arquitetura.svg / .drawio
-    └── prints/                 # evidências visuais (screenshots)
+├── .github/workflows/deploy.yml
+├── docs/
+│   ├── arquitetura.svg
+│   └── prints/
+├── terraform/
+│   ├── main.tf
+│   ├── locals.tf
+│   ├── variables.tf
+│   └── outputs.tf
+├── lambda_function.py
+├── statemachine.asl.json
+└── test_lambda_function.py
 ```

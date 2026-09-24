@@ -66,12 +66,13 @@ locals {
       {
         type = "metric", x = 0, y = 12, width = 12, height = 6,
         properties = {
-          title  = "Negócio — Cadastros x Duplicados x Cancelados",
+          title  = "Negócio — resultados do processamento",
           region = var.region, view = "timeSeries", stacked = true, period = 300,
           metrics = [
             [local.ns, "Cadastros", "Endpoint", "selecionar", { stat = "Sum" }],
             [local.ns, "Duplicados", "Endpoint", "selecionar", { stat = "Sum" }],
-            [local.ns, "Cancelados", "Endpoint", "selecionar", { stat = "Sum" }]
+            [local.ns, "Cancelados", "Endpoint", "selecionar", { stat = "Sum" }],
+            [local.ns, "Pendentes", "Endpoint", "selecionar", { stat = "Sum" }]
           ]
         }
       },
@@ -101,7 +102,7 @@ locals {
         properties = {
           title  = "Logs estruturados (últimas seleções)",
           region = var.region,
-          query  = "SOURCE '/aws/lambda/${local.fn}' | fields @timestamp, evento, cadastrados, duplicados, cancelados, latencia_ms | filter evento = 'selecao_processada' | sort @timestamp desc | limit 20",
+          query  = "SOURCE '/aws/lambda/${local.fn}' | fields @timestamp, evento, cadastrados, duplicados, cancelados, pendentes, latencia_ms | filter evento = 'selecao_processada' | sort @timestamp desc | limit 20",
           view   = "table"
         }
       }

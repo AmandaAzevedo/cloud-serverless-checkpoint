@@ -4,7 +4,7 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = "~> 6.0"
     }
     archive = {
       source  = "hashicorp/archive"
@@ -36,17 +36,64 @@ resource "aws_dynamodb_table" "selecoes" {
     name = "email"
     type = "S"
   }
+
+  server_side_encryption {
+    enabled = true
+  }
 }
 
 resource "aws_sqs_queue" "dlq" {
   name                      = "${var.prefix}-dlq"
   message_retention_seconds = 1209600 # 14 dias
+  sqs_managed_sse_enabled   = true
+}
+
+# Evento de domínio: o fluxo crítico termina no Step Functions e os consumidores
+# posteriores reagem por coreografia, sem acoplar seu tempo de execução ao HTTP.
+resource "aws_sns_topic" "eventos" {
+  name = "${var.prefix}-eventos"
+}
+
+resource "aws_sqs_queue" "auditoria" {
+  name                      = "${var.prefix}-auditoria"
+  message_retention_seconds = 345600 # 4 dias
+  sqs_managed_sse_enabled   = true
+}
+
+data "aws_iam_policy_document" "auditoria" {
+  statement {
+    sid       = "PermitirSomenteTopicoDeEventos"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.auditoria.arn]
+
+    principals {
+      type        = "Service"
+      identifiers = ["sns.amazonaws.com"]
+    }
+
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:SourceArn"
+      values   = [aws_sns_topic.eventos.arn]
+    }
+  }
+}
+
+resource "aws_sqs_queue_policy" "auditoria" {
+  queue_url = aws_sqs_queue.auditoria.id
+  policy    = data.aws_iam_policy_document.auditoria.json
+}
+
+resource "aws_sns_topic_subscription" "auditoria" {
+  topic_arn            = aws_sns_topic.eventos.arn
+  protocol             = "sqs"
+  endpoint             = aws_sqs_queue.auditoria.arn
+  raw_message_delivery = true
 }
 
 # Amazon SES — envio de e-mail para o destinatário informado no request.
 # Cria a identidade do remetente (a AWS envia um e-mail de verificação a ele).
 resource "aws_ses_email_identity" "remetente" {
-  count = var.sender_email == "" ? 0 : 1
   email = var.sender_email
 }
 
@@ -80,10 +127,22 @@ data "aws_iam_policy_document" "sfn" {
     resources = [aws_sqs_queue.dlq.arn]
   }
   statement {
+    sid       = "PublicarEventosDeDominio"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.eventos.arn]
+  }
+  statement {
     sid       = "EnviarEmail"
     actions   = ["ses:SendEmail", "ses:SendRawEmail"]
-    resources = ["*"]
+    resources = [aws_ses_email_identity.remetente.arn]
   }
+
+  statement {
+    sid       = "ClassificarComIA"
+    actions   = ["bedrock:InvokeModel"]
+    resources = ["arn:aws:bedrock:${var.region}::foundation-model/${var.bedrock_model_id}"]
+  }
+
   statement {
     sid = "LogsDoStepFunctions"
     actions = [
@@ -117,14 +176,17 @@ resource "aws_sfn_state_machine" "orquestrador" {
   type     = "EXPRESS"
 
   definition = templatefile("${path.module}/../statemachine.asl.json", {
-    TableName   = aws_dynamodb_table.selecoes.name
-    DlqUrl      = aws_sqs_queue.dlq.url
-    SenderEmail = var.sender_email
+    TableName      = aws_dynamodb_table.selecoes.name
+    DlqUrl         = aws_sqs_queue.dlq.url
+    SenderEmail    = var.sender_email
+    BedrockModelId = var.bedrock_model_id
+    EventsTopicArn = aws_sns_topic.eventos.arn
   })
 
   logging_configuration {
-    log_destination        = "${aws_cloudwatch_log_group.sfn.arn}:*"
-    include_execution_data = true
+    log_destination = "${aws_cloudwatch_log_group.sfn.arn}:*"
+    # Nome, perfil e e-mail são dados pessoais; mantemos apenas eventos do fluxo.
+    include_execution_data = false
     level                  = "ALL"
   }
 }
@@ -209,9 +271,48 @@ resource "aws_lambda_permission" "api_public_url" {
   function_url_auth_type = "NONE"
 }
 
+# Desde outubro de 2025, Function URLs novas exigem também InvokeFunction.
+# A condição impede que o acesso público seja usado por outra via de invocação.
+resource "aws_lambda_permission" "api_public_invoke" {
+  statement_id             = "AllowPublicInvokeOnlyViaFunctionUrl"
+  action                   = "lambda:InvokeFunction"
+  function_name            = aws_lambda_function.api.function_name
+  principal                = "*"
+  invoked_via_function_url = true
+}
+
 data "aws_caller_identity" "atual" {}
 
 resource "aws_cloudwatch_dashboard" "observabilidade" {
   dashboard_name = "${var.prefix}-observabilidade"
   dashboard_body = jsonencode(local.dashboard)
+}
+
+# Alarmes operacionais: ficam visíveis no CloudWatch mesmo sem um canal de SNS.
+resource "aws_cloudwatch_metric_alarm" "lambda_erros" {
+  alarm_name          = "${var.prefix}-lambda-erros"
+  alarm_description   = "A Lambda HTTP apresentou erro não tratado."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  dimensions          = { FunctionName = aws_lambda_function.api.function_name }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "dlq_com_mensagens" {
+  alarm_name          = "${var.prefix}-dlq-com-mensagens"
+  alarm_description   = "Há falha que precisa de análise ou reconciliação na DLQ."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  dimensions          = { QueueName = aws_sqs_queue.dlq.name }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
 }

@@ -1,65 +1,31 @@
-<mxfile host="app.diagrams.net">
-  <diagram name="cp3-arquitetura" id="cp3-arch">
-    <mxGraphModel dx="1200" dy="760" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1240" pageHeight="640" math="0" shadow="0">
+<mxfile host="app.diagrams.net" modified="2026-09-24T00:00:00.000Z" agent="Codex" version="26.0.0">
+  <diagram id="arquitetura-final" name="Arquitetura final">
+    <mxGraphModel dx="1200" dy="760" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
       <root>
-        <mxCell id="0" />
-        <mxCell id="1" parent="0" />
-
-        <mxCell id="user" value="Usuário&#10;(curl)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eceff1;strokeColor=#607d8b;strokeWidth=2;" vertex="1" parent="1">
-          <mxGeometry x="20" y="230" width="120" height="60" as="geometry" />
-        </mxCell>
-
-        <mxCell id="api" value="Lambda (única)&#10;POST /v1/selecionar&#10;GET /v1/alunos" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2e6;strokeColor=#ed7100;strokeWidth=2;" vertex="1" parent="1">
-          <mxGeometry x="190" y="220" width="180" height="80" as="geometry" />
-        </mxCell>
-
-        <mxCell id="sfn" value="Step Functions — Map (lote) por aluno (nativo, sem Lambda)" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=#f3ecfb;strokeColor=#8c4fdf;strokeWidth=2;fontColor=#5b2a9e;fontStyle=1;" vertex="1" parent="1">
-          <mxGeometry x="430" y="40" width="800" height="270" as="geometry" />
-        </mxCell>
-        <mxCell id="sortear" value="Sortear&#10;MathRandom" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f3ecfb;strokeColor=#8c4fdf;strokeWidth=2;" vertex="1" parent="1">
-          <mxGeometry x="450" y="90" width="120" height="50" as="geometry" />
-        </mxCell>
-        <mxCell id="choice" value="Choice&#10;lema" style="rhombus;whiteSpace=wrap;html=1;fillColor=#f3ecfb;strokeColor=#8c4fdf;strokeWidth=2;" vertex="1" parent="1">
-          <mxGeometry x="600" y="88" width="110" height="55" as="geometry" />
-        </mxCell>
-        <mxCell id="persistir" value="Persistir&#10;e-mail único" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8eaf6;strokeColor=#2e27ad;strokeWidth=2;" vertex="1" parent="1">
-          <mxGeometry x="740" y="88" width="140" height="55" as="geometry" />
-        </mxCell>
-        <mxCell id="notificar" value="Notificar&#10;SES sendEmail" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fce8ef;strokeColor=#c7317a;strokeWidth=2;" vertex="1" parent="1">
-          <mxGeometry x="910" y="88" width="130" height="55" as="geometry" />
-        </mxCell>
-        <mxCell id="marcar" value="MarcarNotificado&#10;updateItem: true" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6f4ea;strokeColor=#1b9e77;strokeWidth=2;" vertex="1" parent="1">
-          <mxGeometry x="1070" y="88" width="140" height="55" as="geometry" />
-        </mxCell>
-        <mxCell id="dup" value="e-mail repetido&#10;→ duplicado" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef1f4;strokeColor=#607d8b;strokeWidth=2;" vertex="1" parent="1">
-          <mxGeometry x="740" y="185" width="140" height="45" as="geometry" />
-        </mxCell>
-        <mxCell id="rollback" value="DesfazerCadastro&#10;rollback: deleteItem" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fdeceb;strokeColor=#d13212;strokeWidth=2;" vertex="1" parent="1">
-          <mxGeometry x="910" y="185" width="150" height="50" as="geometry" />
-        </mxCell>
-
-        <mxCell id="ddb" value="DynamoDB&#10;chave = email · notificado" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8eaf6;strokeColor=#2e27ad;strokeWidth=2;" vertex="1" parent="1">
-          <mxGeometry x="700" y="360" width="170" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="ses" value="Amazon SES&#10;e-mail ao aluno" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fce8ef;strokeColor=#c7317a;strokeWidth=2;" vertex="1" parent="1">
-          <mxGeometry x="900" y="360" width="140" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="dlq" value="SQS DLQ&#10;falhas de e-mail" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fdeceb;strokeColor=#d13212;strokeWidth=2;" vertex="1" parent="1">
-          <mxGeometry x="1070" y="360" width="150" height="60" as="geometry" />
-        </mxCell>
-
-        <mxCell id="e1" value="HTTP" style="endArrow=classic;html=1;strokeColor=#5a6b7b;strokeWidth=2;fontSize=11;" edge="1" parent="1" source="user" target="api"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e2" value="POST: inicia" style="endArrow=classic;html=1;strokeColor=#5a6b7b;strokeWidth=2;fontSize=11;" edge="1" parent="1" source="api" target="sortear"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e3" style="endArrow=classic;html=1;strokeColor=#5a6b7b;strokeWidth=2;" edge="1" parent="1" source="sortear" target="choice"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e4" style="endArrow=classic;html=1;strokeColor=#5a6b7b;strokeWidth=2;" edge="1" parent="1" source="choice" target="persistir"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e5" style="endArrow=classic;html=1;strokeColor=#5a6b7b;strokeWidth=2;" edge="1" parent="1" source="persistir" target="notificar"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e6" value="ok" style="endArrow=classic;html=1;strokeColor=#1b9e77;strokeWidth=2;fontSize=11;fontColor=#127a5c;" edge="1" parent="1" source="notificar" target="marcar"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e7" value="duplicado" style="endArrow=classic;html=1;strokeColor=#607d8b;strokeWidth=2;dashed=1;fontSize=11;" edge="1" parent="1" source="persistir" target="dup"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e8" value="falha (retry 2x)" style="endArrow=classic;html=1;strokeColor=#d13212;strokeWidth=2;dashed=1;fontSize=11;fontColor=#a12a0e;" edge="1" parent="1" source="notificar" target="rollback"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e9" value="grava" style="endArrow=classic;html=1;strokeColor=#5a6b7b;strokeWidth=2;fontSize=11;" edge="1" parent="1" source="persistir" target="ddb"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e10" value="envia" style="endArrow=classic;html=1;strokeColor=#c7317a;strokeWidth=2;fontSize=11;" edge="1" parent="1" source="notificar" target="ses"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e11" value="catch → DLQ" style="endArrow=classic;html=1;strokeColor=#d13212;strokeWidth=2;dashed=1;fontSize=11;fontColor=#a12a0e;" edge="1" parent="1" source="rollback" target="dlq"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e12" value="GET: lê alunos" style="endArrow=classic;html=1;strokeColor=#5a6b7b;strokeWidth=2;dashed=1;fontSize=11;" edge="1" parent="1" source="api" target="ddb"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title" value="Chapéu Seletor Serverless — arquitetura event-driven com IA" style="text;html=1;fontSize=24;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1"><mxGeometry x="30" y="20" width="760" height="40" as="geometry"/></mxCell>
+        <mxCell id="cliente" value="&lt;b&gt;Cliente HTTP&lt;/b&gt;&lt;br&gt;JSON" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f2f4f7;strokeColor=#98a2b3;strokeWidth=2;" vertex="1" parent="1"><mxGeometry x="30" y="150" width="120" height="70" as="geometry"/></mxCell>
+        <mxCell id="lambda" value="&lt;b&gt;AWS Lambda&lt;/b&gt;&lt;br&gt;validação + API" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff4e8;strokeColor=#f79009;strokeWidth=2;" vertex="1" parent="1"><mxGeometry x="190" y="140" width="145" height="90" as="geometry"/></mxCell>
+        <mxCell id="sfn" value="&lt;b&gt;Step Functions Express&lt;/b&gt;&lt;br&gt;orquestração · retry · saga" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f4f0ff;strokeColor=#7f56d9;strokeWidth=2;" vertex="1" parent="1"><mxGeometry x="380" y="135" width="180" height="100" as="geometry"/></mxCell>
+        <mxCell id="bedrock" value="&lt;b&gt;Amazon Bedrock&lt;/b&gt;&lt;br&gt;Nova Lite + fallback" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f4f0ff;strokeColor=#7f56d9;strokeWidth=2;" vertex="1" parent="1"><mxGeometry x="610" y="80" width="160" height="80" as="geometry"/></mxCell>
+        <mxCell id="ddb" value="&lt;b&gt;DynamoDB&lt;/b&gt;&lt;br&gt;idempotência" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef4ff;strokeColor=#2970ff;strokeWidth=2;" vertex="1" parent="1"><mxGeometry x="610" y="190" width="160" height="80" as="geometry"/></mxCell>
+        <mxCell id="ses" value="&lt;b&gt;Amazon SES&lt;/b&gt;&lt;br&gt;notificação" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff1f3;strokeColor=#e31b54;strokeWidth=2;" vertex="1" parent="1"><mxGeometry x="820" y="80" width="150" height="80" as="geometry"/></mxCell>
+        <mxCell id="dlq" value="&lt;b&gt;SQS DLQ&lt;/b&gt;&lt;br&gt;falhas e reconciliação" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff1f3;strokeColor=#d92d20;strokeWidth=2;" vertex="1" parent="1"><mxGeometry x="820" y="190" width="150" height="80" as="geometry"/></mxCell>
+        <mxCell id="sns" value="&lt;b&gt;SNS&lt;/b&gt;&lt;br&gt;AlunoSelecionado" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fdf2fa;strokeColor=#c11574;strokeWidth=2;" vertex="1" parent="1"><mxGeometry x="610" y="360" width="160" height="80" as="geometry"/></mxCell>
+        <mxCell id="audit" value="&lt;b&gt;SQS Auditoria&lt;/b&gt;&lt;br&gt;consumidor assíncrono" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef4ff;strokeColor=#2970ff;strokeWidth=2;" vertex="1" parent="1"><mxGeometry x="820" y="360" width="170" height="80" as="geometry"/></mxCell>
+        <mxCell id="cw" value="&lt;b&gt;CloudWatch&lt;/b&gt;&lt;br&gt;logs · métricas · alarmes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f2f4f7;strokeColor=#475467;strokeWidth=2;" vertex="1" parent="1"><mxGeometry x="190" y="360" width="170" height="80" as="geometry"/></mxCell>
+        <mxCell id="gha" value="&lt;b&gt;GitHub Actions&lt;/b&gt;&lt;br&gt;testes + Terraform" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff4e8;strokeColor=#f79009;strokeWidth=2;" vertex="1" parent="1"><mxGeometry x="400" y="360" width="160" height="80" as="geometry"/></mxCell>
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="cliente" target="lambda"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="lambda" target="sfn"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="sfn" target="bedrock"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="sfn" target="ddb"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="sfn" target="ses"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e6" value="falha / rollback" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;strokeColor=#d92d20;endArrow=block;endFill=1;" edge="1" parent="1" source="sfn" target="dlq"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e7" value="evento" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="sfn" target="sns"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;" edge="1" parent="1" source="sns" target="audit"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;endArrow=block;endFill=1;" edge="1" parent="1" source="lambda" target="cw"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;endArrow=block;endFill=1;" edge="1" parent="1" source="gha" target="sfn"><mxGeometry relative="1" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

@@ -1,13 +1,14 @@
-"""
-Chapéu Seletor Serverless — Checkpoint 3 (Orquestração com AWS Step Functions).
+"""Chapéu Seletor Serverless — projeto final.
 
-Uma ÚNICA Lambda expõe dois endpoints HTTP (Function URL):
+Uma única Lambda expõe três endpoints HTTP (Function URL):
   * POST /v1/selecionar  → envia a entrada para o Step Functions e devolve o resultado.
   * GET  /v1/alunos      → lista os alunos gravados (lê o DynamoDB).
+  * GET  /v1/versao      → identifica a versão e o commit implantados.
 
-A orquestração (sortear a casa + persistir de forma idempotente) acontece
+A orquestração (classificar + persistir + notificar) acontece
 inteiramente dentro do Step Functions, com integrações nativas (sem Lambda):
-sorteio via `States.MathRandom` e gravação via integração direta `dynamodb:putItem`.
+classificação via Amazon Bedrock, fallback com `States.MathRandom` e integrações
+diretas com DynamoDB, SES e SQS.
 
 Handler: lambda_function.lambda_handler
 """
@@ -18,6 +19,7 @@ import base64
 import json
 import logging
 import os
+import re
 import time
 
 logger = logging.getLogger()
@@ -26,9 +28,12 @@ logger.setLevel(logging.INFO)
 ROTA_SELECIONAR = "/v1/selecionar"
 ROTA_ALUNOS = "/v1/alunos"
 ROTA_VERSAO = "/v1/versao"
+VERSAO = "2.0.0"
 
-# Versão da aplicação (bump manual). O commit é injetado no deploy (APP_VERSION).
-VERSAO = "1.0.0"
+MAX_ALUNOS_POR_REQUISICAO = 25
+MAX_NOME = 120
+MAX_PERFIL = 500
+EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 # Namespace das métricas customizadas (CloudWatch / EMF).
 NAMESPACE_METRICAS = "ChapeuSeletor"
@@ -112,7 +117,11 @@ def _corpo(event: dict) -> str:
 
 
 def _resposta_json(dados: dict, status: int = 200, headers: dict | None = None) -> dict:
-    cabecalhos = {"Content-Type": "application/json; charset=utf-8"}
+    cabecalhos = {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
     if headers:
         cabecalhos.update(headers)
     return {
@@ -126,52 +135,85 @@ def _resposta_json(dados: dict, status: int = 200, headers: dict | None = None) 
 # POST /v1/selecionar → inicia a execução síncrona do Step Functions.
 # ---------------------------------------------------------------------------
 def _selecionar(event: dict) -> dict:
-    corpo = _corpo(event)
     try:
-        dados = json.loads(corpo)
-    except (ValueError, TypeError):
-        dados = {}
+        dados = json.loads(_corpo(event))
+    except (ValueError, TypeError, UnicodeDecodeError):
+        return _resposta_json({"erro": "O corpo deve ser um JSON válido."}, 400)
     if not isinstance(dados, dict):
-        dados = {}
+        return _resposta_json({"erro": "O corpo JSON deve ser um objeto."}, 400)
 
     # Aceita: um aluno ("nome"+"email") ou uma lista ("alunos": [{"nome","email"}, ...]).
     if isinstance(dados.get("alunos"), list):
         entradas = [a for a in dados["alunos"] if isinstance(a, dict)]
     elif dados.get("nome") or dados.get("email"):
-        entradas = [{"nome": dados.get("nome"), "email": dados.get("email")}]
+        entradas = [
+            {
+                "nome": dados.get("nome"),
+                "email": dados.get("email"),
+                "caracteristicas": dados.get("caracteristicas"),
+                "perfil": dados.get("perfil"),
+            }
+        ]
     else:
         entradas = []
 
     if not entradas:
         return _resposta_json({"erro": "Informe 'nome' e 'email' no corpo JSON."}, 400)
 
+    if len(entradas) > MAX_ALUNOS_POR_REQUISICAO:
+        return _resposta_json(
+            {"erro": f"Envie no máximo {MAX_ALUNOS_POR_REQUISICAO} alunos por requisição."}, 400
+        )
+
     # E-mail é obrigatório para todos os alunos.
     alunos = []
     for item in entradas:
         nome = str(item.get("nome") or "").strip()
-        email = str(item.get("email") or "").strip()
+        email = str(item.get("email") or "").strip().lower()
+        perfil = str(item.get("caracteristicas") or item.get("perfil") or "Não informadas.").strip()
         if not nome or not email:
             return _resposta_json({"erro": "'nome' e 'email' são obrigatórios."}, 400)
-        alunos.append({"nome": nome, "email": email})
+        if len(nome) > MAX_NOME:
+            return _resposta_json({"erro": f"'nome' deve ter no máximo {MAX_NOME} caracteres."}, 400)
+        if len(email) > 254 or not EMAIL_RE.fullmatch(email):
+            return _resposta_json({"erro": "Informe um e-mail válido."}, 400)
+        if len(perfil) > MAX_PERFIL:
+            return _resposta_json(
+                {"erro": f"'caracteristicas' deve ter no máximo {MAX_PERFIL} caracteres."}, 400
+            )
+        alunos.append({"nome": nome, "email": email, "perfil": perfil})
 
     inicio = time.time()
-    resposta = _sfn_client().start_sync_execution(
-        stateMachineArn=os.environ["STATE_MACHINE_ARN"],
-        input=json.dumps({"alunos": alunos}, ensure_ascii=False),
-    )
+    try:
+        resposta = _sfn_client().start_sync_execution(
+            stateMachineArn=os.environ["STATE_MACHINE_ARN"],
+            input=json.dumps({"alunos": alunos}, ensure_ascii=False),
+        )
+    except Exception as exc:  # a API não deve expor detalhes internos da AWS
+        latencia_ms = int((time.time() - inicio) * 1000)
+        _log("orquestracao_indisponivel", latencia_ms=latencia_ms, tipo_erro=type(exc).__name__)
+        _metricas({"FluxoFalhou": 1}, {"Endpoint": "selecionar"})
+        return _resposta_json({"status": "falha", "erro": "Orquestração temporariamente indisponível."}, 503)
     latencia_ms = int((time.time() - inicio) * 1000)
 
     if resposta.get("status") != "SUCCEEDED":
-        _log("selecao_falhou", latencia_ms=latencia_ms, erro=resposta.get("error"), causa=resposta.get("cause"))
+        _log("selecao_falhou", latencia_ms=latencia_ms, tipo_erro=resposta.get("error"))
         _metricas({"FluxoFalhou": 1}, {"Endpoint": "selecionar"})
-        return _resposta_json(
-            {"status": "falha", "erro": resposta.get("error"), "causa": resposta.get("cause")}, 502
-        )
+        return _resposta_json({"status": "falha", "erro": "Não foi possível concluir a seleção."}, 502)
 
-    saida = json.loads(resposta.get("output") or "[]")
+    try:
+        saida = json.loads(resposta.get("output") or "[]")
+    except (TypeError, ValueError):
+        _log("resposta_orquestracao_invalida", latencia_ms=latencia_ms)
+        _metricas({"FluxoFalhou": 1}, {"Endpoint": "selecionar"})
+        return _resposta_json({"status": "falha", "erro": "Resposta inválida da orquestração."}, 502)
+
+    if not isinstance(saida, list):
+        _log("resposta_orquestracao_invalida", latencia_ms=latencia_ms)
+        return _resposta_json({"status": "falha", "erro": "Resposta inválida da orquestração."}, 502)
 
     # Contabiliza os resultados por status e por casa para as métricas.
-    contagem = {"cadastrado": 0, "duplicado": 0, "cancelado": 0}
+    contagem = {"cadastrado": 0, "duplicado": 0, "cancelado": 0, "pendente": 0}
     for r in saida:
         status = r.get("status", "desconhecido")
         contagem[status] = contagem.get(status, 0) + 1
@@ -185,12 +227,14 @@ def _selecionar(event: dict) -> dict:
         cadastrados=contagem["cadastrado"],
         duplicados=contagem["duplicado"],
         cancelados=contagem["cancelado"],
+        pendentes=contagem["pendente"],
     )
     _metricas(
         {
             "Cadastros": contagem["cadastrado"],
             "Duplicados": contagem["duplicado"],
             "Cancelados": contagem["cancelado"],
+            "Pendentes": contagem["pendente"],
             "LatenciaFluxoMs": latencia_ms,
         },
         {"Endpoint": "selecionar"},
@@ -207,16 +251,23 @@ def _selecionar(event: dict) -> dict:
 # ---------------------------------------------------------------------------
 def _listar() -> dict:
     tabela = os.environ["TABLE_NAME"]
-    resposta = _dynamodb_client().scan(TableName=tabela)
+    cliente = _dynamodb_client()
+    resposta = cliente.scan(TableName=tabela)
+    itens = list(resposta.get("Items", []))
+    while resposta.get("LastEvaluatedKey"):
+        resposta = cliente.scan(TableName=tabela, ExclusiveStartKey=resposta["LastEvaluatedKey"])
+        itens.extend(resposta.get("Items", []))
     alunos = [
         {
             "nome": item["nome"]["S"],
             "email": item.get("email", {}).get("S", ""),
             "casa": item["casa"]["S"],
+            "justificativa": item.get("justificativa", {}).get("S", ""),
+            "origem": item.get("origem", {}).get("S", ""),
             "notificado": item.get("notificado", {}).get("BOOL", False),
             "criado_em": item.get("criado_em", {}).get("S"),
         }
-        for item in resposta.get("Items", [])
+        for item in itens
     ]
     alunos.sort(key=lambda a: a["nome"].lower())
     _log("alunos_listados", total=len(alunos))
@@ -224,18 +275,15 @@ def _listar() -> dict:
     return _resposta_json({"total": len(alunos), "alunos": alunos})
 
 
-# ---------------------------------------------------------------------------
-# GET /v1/versao → mostra a versão implantada (para verificar o deploy).
-# ---------------------------------------------------------------------------
-def _versao() -> dict:
-    dados = {
-        "versao": VERSAO,
-        "commit": os.environ.get("APP_VERSION", "desconhecido"),
-        "lambda_version": os.environ.get("AWS_LAMBDA_FUNCTION_VERSION", ""),
-        "consultado_em": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
-    _log("versao_consultada", versao=dados["versao"], commit=dados["commit"])
-    return _resposta_json(dados)
+def _versao(context) -> dict:
+    """Expõe metadados não sensíveis para comprovar o artefato implantado."""
+    return _resposta_json(
+        {
+            "versao": VERSAO,
+            "commit": os.environ.get("APP_VERSION", "local"),
+            "lambda_version": getattr(context, "function_version", "$LATEST"),
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -258,8 +306,14 @@ def lambda_handler(event, context):
     if caminho == ROTA_VERSAO:
         if metodo != "GET":
             return _resposta_json({"erro": f"Use GET {ROTA_VERSAO}"}, 405, {"Allow": "GET"})
-        return _versao()
+        return _versao(context)
 
     return _resposta_json(
-        {"erro": f"Rota não encontrada. Use {ROTA_SELECIONAR}, {ROTA_ALUNOS} ou {ROTA_VERSAO}"}, 404
+        {
+            "erro": (
+                f"Rota não encontrada. Use POST {ROTA_SELECIONAR}, "
+                f"GET {ROTA_ALUNOS} ou GET {ROTA_VERSAO}"
+            )
+        },
+        404,
     )

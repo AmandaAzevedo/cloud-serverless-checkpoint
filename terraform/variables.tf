@@ -5,7 +5,7 @@ variable "region" {
 }
 
 variable "prefix" {
-  description = "Prefixo usado no nome de todos os recursos do cp3."
+  description = "Prefixo usado no nome dos recursos. Mantido estável para não recriar a infraestrutura existente."
   type        = string
   default     = "chapeu-seletor-cp3"
 }
@@ -19,11 +19,21 @@ variable "allowed_origins" {
 variable "sender_email" {
   description = "E-mail remetente (From) verificado no SES para enviar as notificações."
   type        = string
-  default     = ""
+
+  validation {
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.sender_email))
+    error_message = "sender_email deve ser um e-mail válido e previamente verificado no SES."
+  }
 }
 
 variable "app_version" {
   description = "Identificador da versão implantada (ex.: SHA do commit). Exposto em GET /v1/versao."
   type        = string
   default     = "local"
+}
+
+variable "bedrock_model_id" {
+  description = "ID do modelo do Amazon Bedrock usado para classificar a casa (Chapéu Seletor IA)."
+  type        = string
+  default     = "amazon.nova-lite-v1:0"
 }
