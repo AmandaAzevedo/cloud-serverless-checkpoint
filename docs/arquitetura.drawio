@@ -1,0 +1,60 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="cp2-arquitetura" id="cp2-arch">
+    <mxGraphModel dx="900" dy="600" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="900" pageHeight="450" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="user" value="Usuário&#10;(curl / browser)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eceff1;strokeColor=#607d8b;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="20" y="180" width="130" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pub" value="Lambda produtora&#10;publisher_handler" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2e6;strokeColor=#ed7100;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="220" y="60" width="170" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="sns" value="Amazon SNS&#10;tópico &quot;alunos&quot;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fde7f1;strokeColor=#e7157b;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="440" y="60" width="160" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="con" value="Lambda consumidora&#10;lambda_handler" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2e6;strokeColor=#ed7100;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="650" y="60" width="170" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="list" value="Lambda listadora&#10;lister_handler" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2e6;strokeColor=#ed7100;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="220" y="330" width="170" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ddb" value="DynamoDB&#10;alunos-selecionados" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8eaf6;strokeColor=#2e27ad;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="480" y="330" width="160" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cw" value="CloudWatch&#10;Logs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6f4ea;strokeColor=#1b9e77;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="690" y="330" width="150" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e1" value="POST /v1/selecionar" style="endArrow=classic;html=1;strokeColor=#5a6b7b;strokeWidth=2;fontSize=11;" edge="1" parent="1" source="user" target="pub">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" value="publica" style="endArrow=classic;html=1;strokeColor=#5a6b7b;strokeWidth=2;fontSize=11;" edge="1" parent="1" source="pub" target="sns">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" value="dispara (evento)" style="endArrow=classic;html=1;strokeColor=#5a6b7b;strokeWidth=2;fontSize=11;" edge="1" parent="1" source="sns" target="con">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" value="grava" style="endArrow=classic;html=1;strokeColor=#5a6b7b;strokeWidth=2;fontSize=11;" edge="1" parent="1" source="con" target="ddb">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" value="loga" style="endArrow=classic;html=1;strokeColor=#5a6b7b;strokeWidth=2;fontSize=11;" edge="1" parent="1" source="con" target="cw">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" value="GET /v1/alunos" style="endArrow=classic;html=1;strokeColor=#5a6b7b;strokeWidth=2;fontSize=11;" edge="1" parent="1" source="user" target="list">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" value="lê" style="endArrow=classic;html=1;strokeColor=#5a6b7b;strokeWidth=2;fontSize=11;" edge="1" parent="1" source="list" target="ddb">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

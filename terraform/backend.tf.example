@@ -13,7 +13,7 @@
 terraform {
   backend "s3" {
     bucket       = "chapeu-seletor-tfstate-SEU_ACCOUNT_ID"
-    key          = "cp1/terraform.tfstate"
+    key          = "cp2/terraform.tfstate"
     region       = "us-east-1"
     encrypt      = true
     use_lockfile = true # travamento nativo do S3 (não precisa de DynamoDB)

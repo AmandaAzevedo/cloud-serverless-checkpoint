@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 340" font-family="Helvetica, Arial, sans-serif" font-size="13">
+  <rect x="0" y="0" width="860" height="340" fill="#ffffff"/>
+
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 z" fill="#5a6b7b"/>
+    </marker>
+  </defs>
+
+  <!-- ==== nós ==== -->
+  <!-- Usuário -->
+  <g>
+    <rect x="20" y="132" width="120" height="58" rx="8" fill="#eceff1" stroke="#607d8b" stroke-width="2"/>
+    <text x="80" y="157" text-anchor="middle" fill="#232f3e" font-weight="bold">Usuário</text>
+    <text x="80" y="175" text-anchor="middle" fill="#607d8b" font-size="11">(curl / browser)</text>
+  </g>
+
+  <!-- Produtora -->
+  <g>
+    <rect x="200" y="40" width="160" height="58" rx="8" fill="#fff2e6" stroke="#ed7100" stroke-width="2"/>
+    <text x="280" y="64" text-anchor="middle" fill="#232f3e" font-weight="bold">Lambda produtora</text>
+    <text x="280" y="82" text-anchor="middle" fill="#a35400" font-size="11">publisher_handler</text>
+  </g>
+
+  <!-- SNS -->
+  <g>
+    <rect x="410" y="40" width="150" height="58" rx="8" fill="#fde7f1" stroke="#e7157b" stroke-width="2"/>
+    <text x="485" y="64" text-anchor="middle" fill="#232f3e" font-weight="bold">Amazon SNS</text>
+    <text x="485" y="82" text-anchor="middle" fill="#b01162" font-size="11">tópico "alunos"</text>
+  </g>
+
+  <!-- Consumidora -->
+  <g>
+    <rect x="610" y="40" width="160" height="58" rx="8" fill="#fff2e6" stroke="#ed7100" stroke-width="2"/>
+    <text x="690" y="64" text-anchor="middle" fill="#232f3e" font-weight="bold">Lambda consumidora</text>
+    <text x="690" y="82" text-anchor="middle" fill="#a35400" font-size="11">lambda_handler</text>
+  </g>
+
+  <!-- Listadora -->
+  <g>
+    <rect x="200" y="250" width="160" height="58" rx="8" fill="#fff2e6" stroke="#ed7100" stroke-width="2"/>
+    <text x="280" y="274" text-anchor="middle" fill="#232f3e" font-weight="bold">Lambda listadora</text>
+    <text x="280" y="292" text-anchor="middle" fill="#a35400" font-size="11">lister_handler</text>
+  </g>
+
+  <!-- DynamoDB -->
+  <g>
+    <rect x="440" y="250" width="150" height="58" rx="8" fill="#e8eaf6" stroke="#2e27ad" stroke-width="2"/>
+    <text x="515" y="274" text-anchor="middle" fill="#232f3e" font-weight="bold">DynamoDB</text>
+    <text x="515" y="292" text-anchor="middle" fill="#2e27ad" font-size="11">alunos-selecionados</text>
+  </g>
+
+  <!-- CloudWatch -->
+  <g>
+    <rect x="640" y="250" width="150" height="58" rx="8" fill="#e6f4ea" stroke="#1b9e77" stroke-width="2"/>
+    <text x="715" y="274" text-anchor="middle" fill="#232f3e" font-weight="bold">CloudWatch</text>
+    <text x="715" y="292" text-anchor="middle" fill="#127a5c" font-size="11">Logs</text>
+  </g>
+
+  <!-- ==== arestas ==== -->
+  <!-- Usuário -> Produtora -->
+  <path d="M140,150 L200,90" fill="none" stroke="#5a6b7b" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="150" y="112" fill="#37474f" font-size="11">POST /v1/selecionar</text>
+
+  <!-- Produtora -> SNS -->
+  <path d="M360,69 L406,69" fill="none" stroke="#5a6b7b" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="356" y="34" fill="#37474f" font-size="11">publica</text>
+
+  <!-- SNS -> Consumidora -->
+  <path d="M560,69 L606,69" fill="none" stroke="#5a6b7b" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="556" y="34" fill="#37474f" font-size="11">dispara (evento)</text>
+
+  <!-- Consumidora -> DynamoDB (grava) -->
+  <path d="M660,98 L540,248" fill="none" stroke="#5a6b7b" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="548" y="180" fill="#37474f" font-size="11">grava</text>
+
+  <!-- Consumidora -> CloudWatch (loga) -->
+  <path d="M710,98 L715,246" fill="none" stroke="#5a6b7b" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="720" y="180" fill="#37474f" font-size="11">loga</text>
+
+  <!-- Usuário -> Listadora -->
+  <path d="M120,190 L220,248" fill="none" stroke="#5a6b7b" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="80" y="232" fill="#37474f" font-size="11">GET /v1/alunos</text>
+
+  <!-- Listadora -> DynamoDB (lê) -->
+  <path d="M360,279 L436,279" fill="none" stroke="#5a6b7b" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="376" y="272" fill="#37474f" font-size="11">lê</text>
+</svg>
