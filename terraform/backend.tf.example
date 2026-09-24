@@ -1,0 +1,21 @@
+# Backend remoto do state no S3.
+#
+# Copie este arquivo para `backend.tf` e preencha o nome do seu bucket
+# (o bloco `backend` não aceita variáveis, então os valores são literais):
+#
+#   cp backend.tf.example backend.tf
+#   # edite o bucket abaixo
+#   terraform init -migrate-state
+#
+# Sugestão de nome único: inclua o seu AWS Account ID, ex.:
+#   chapeu-seletor-tfstate-<SEU_ACCOUNT_ID>
+
+terraform {
+  backend "s3" {
+    bucket       = "chapeu-seletor-tfstate-SEU_ACCOUNT_ID"
+    key          = "cp1/terraform.tfstate"
+    region       = "us-east-1"
+    encrypt      = true
+    use_lockfile = true # travamento nativo do S3 (não precisa de DynamoDB)
+  }
+}

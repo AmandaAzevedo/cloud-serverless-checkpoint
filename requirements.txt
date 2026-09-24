@@ -1,0 +1,2 @@
+# A função usa apenas a biblioteca padrão do Python (json, random, base64),
+# então não há dependências para instalar/empacotar na Lambda.

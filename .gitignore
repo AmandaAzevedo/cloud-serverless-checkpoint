@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# ---------------------------------------------------------------------------
+# Credenciais / ambiente (nunca versionar)
+# ---------------------------------------------------------------------------
+.env
+*.pem
+*.key
+
+# ---------------------------------------------------------------------------
+# Terraform
+# ---------------------------------------------------------------------------
+# Cache de providers/plugins baixados pelo `terraform init`.
+**/.terraform/
+
+# State fica no backend remoto (S3); nunca versionar cópias locais.
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+
+# Variáveis podem conter dados sensíveis; o .example fica versionado.
+*.tfvars
+!*.tfvars.example
+
+# Backend contém o Account ID (no nome do bucket); o .example fica versionado.
+backend.tf
+
+# Artefatos gerados (ex.: zips de deploy da Lambda).
+**/build/
+crash.log
+
+# NÃO ignorar o .terraform.lock.hcl:
+# ele trava as versões dos providers e DEVE ser versionado.
