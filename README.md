@@ -149,10 +149,6 @@ falha de e-mail):
 
 ![Logs Insights](docs/prints/logs-insights.png)
 
-> Os gráficos foram renderizados a partir das métricas reais do CloudWatch
-> (API `GetMetricWidgetImage`) e a tabela a partir do resultado real do Logs
-> Insights. Os widgets individuais também estão em `docs/prints/`.
-
 ## Análise crítica de performance e custo
 
 Baseada em **métricas reais** coletadas no CloudWatch (8 seleções: 1 cadastro,
