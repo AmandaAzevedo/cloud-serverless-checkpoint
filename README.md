@@ -106,26 +106,79 @@ do workflow.
 | `GET` | `/v1/alunos` | Lista os registros persistidos |
 | `GET` | `/v1/versao` | Mostra versão e commit implantados |
 
-Exemplo individual:
+### Testar a API implantada
+
+Recupere as URLs em um terminal autenticado. Os outputs são sensíveis para que
+os endpoints não apareçam nos logs públicos do pipeline:
 
 ```bash
-curl -X POST "$FUNCTION_URL/v1/selecionar" \
+SELECIONAR_URL="$(terraform -chdir=terraform output -raw selecionar_endpoint)"
+ALUNOS_URL="$(terraform -chdir=terraform output -raw list_endpoint)"
+VERSAO_URL="$(terraform -chdir=terraform output -raw version_endpoint)"
+```
+
+No sandbox do SES, use como destinatário um e-mail previamente verificado.
+
+#### Selecionar um aluno
+
+```bash
+curl -sS -X POST "$SELECIONAR_URL" \
   -H "Content-Type: application/json" \
   -d '{
     "nome": "Amanda",
-    "email": "amanda@example.com",
+    "email": "seu-email-verificado@dominio.com",
     "caracteristicas": "curiosa, leal e gosta de resolver problemas"
-  }'
+  }' | python3 -m json.tool
 ```
 
-Exemplo em lote:
+O campo `caracteristicas` é opcional. Quando ele não é enviado, o modelo
+recebe o perfil `Não informadas.`.
+
+#### Selecionar um lote
+
+```bash
+curl -sS -X POST "$SELECIONAR_URL" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "alunos": [
+      {
+        "nome": "Ana",
+        "email": "email-verificado-1@dominio.com",
+        "caracteristicas": "corajosa e determinada"
+      },
+      {
+        "nome": "Bia",
+        "email": "email-verificado-2@dominio.com",
+        "caracteristicas": "criativa e estudiosa"
+      }
+    ]
+  }' | python3 -m json.tool
+```
+
+#### Comprovar a idempotência
+
+Execute novamente a seleção individual com o mesmo e-mail. A resposta deverá
+conter `"status": "duplicado"`, sem criar um segundo registro.
+
+#### Listar os alunos persistidos
+
+```bash
+curl -sS "$ALUNOS_URL" | python3 -m json.tool
+```
+
+#### Conferir a versão implantada
+
+```bash
+curl -sS "$VERSAO_URL" | python3 -m json.tool
+```
+
+Resposta esperada:
 
 ```json
 {
-  "alunos": [
-    {"nome": "Ana", "email": "ana@example.com", "caracteristicas": "corajosa"},
-    {"nome": "Bia", "email": "bia@example.com", "caracteristicas": "criativa e estudiosa"}
-  ]
+  "versao": "2.0.0",
+  "commit": "SHA_DO_COMMIT_IMPLANTADO",
+  "lambda_version": "$LATEST"
 }
 ```
 
