@@ -20,6 +20,7 @@ fundamentadas em dados reais.
 - [Evidências (prints)](#evidências-prints)
 - [Análise crítica e otimizações](#análise-crítica-de-performance-e-custo)
 - [Como rodar, testar e implantar](#como-rodar-testar-e-implantar)
+- [CI/CD — deploy automático](#cicd--deploy-automático)
 - [Segurança](#segurança)
 - [Estrutura do repositório](#estrutura-do-repositório)
 
@@ -208,6 +209,41 @@ escritas no DynamoDB).
 
 **Passos manuais (uma vez):** verificar o remetente no **SES** e habilitar o
 acesso público da **Function URL** (Auth NONE) no Console.
+
+## CI/CD — deploy automático
+
+O deploy é **100% automatizado** com **GitHub Actions**
+([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)). A cada `push`
+na `main` que altere o código, o fluxo ou a infraestrutura, o pipeline roda em
+dois estágios:
+
+1. **`test`** — instala o Python e roda os testes unitários (`python -m unittest`).
+   Se algum falhar, o deploy **não** acontece.
+2. **`deploy`** (só se os testes passarem) — configura as credenciais AWS a partir
+   dos **Secrets**, gera o `backend.tf` (a partir do Secret do bucket) e executa
+   `terraform init → validate → apply`. O commit implantado é injetado na Lambda
+   (`TF_VAR_app_version = github.sha`).
+
+**Credenciais** vêm de *GitHub Secrets* (`AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, `TF_STATE_BUCKET`, `SENDER_EMAIL`) — nunca do código. O
+usuário IAM usado tem uma **policy mínima**, escopada aos recursos do projeto.
+
+### Evidência do deploy
+
+Execução do pipeline no GitHub Actions (jobs `test` e `deploy` verdes):
+
+![GitHub Actions](docs/prints/github-actions.png)
+
+
+**Verificação automática pelo endpoint de versão:** o `GET /v1/versao` devolve o
+**commit** que está de fato rodando na nuvem. Basta comparar com o SHA do último
+commit / do log do Actions:
+
+    curl "<function_url>/v1/versao"
+    # {"versao":"1.0.0","commit":"<sha-do-ultimo-commit>","lambda_version":"$LATEST",...}
+
+Se o `commit` do endpoint == o SHA do commit no GitHub == o "Commit implantado" no
+resumo do job, o deploy automático está comprovadamente funcionando.
 
 ## Segurança
 
