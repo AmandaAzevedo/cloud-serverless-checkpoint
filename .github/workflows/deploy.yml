@@ -1,0 +1,99 @@
+name: CI/CD — Deploy Serverless
+
+# Deploy automático: a cada push na main que altere o código, o fluxo ou a
+# infraestrutura, roda os testes e, se passarem, aplica o Terraform na AWS.
+# Também pode ser disparado manualmente (workflow_dispatch).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "lambda_function.py"
+      - "statemachine.asl.json"
+      - "terraform/**"
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) TESTES — barram o deploy se algum falhar.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Testes unitários
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Rodar testes
+        run: python -m unittest -v
+
+  # ---------------------------------------------------------------------------
+  # 2) DEPLOY — só roda se os testes passarem.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy (Terraform)
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      TF_VAR_sender_email: ${{ secrets.SENDER_EMAIL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar credenciais AWS (via Secrets)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configurar Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # O backend.tf não é versionado (contém o nome do bucket com o Account ID);
+      # ele é gerado aqui a partir do Secret TF_STATE_BUCKET.
+      - name: Gerar backend.tf (a partir do Secret do bucket)
+        working-directory: terraform
+        run: |
+          cat > backend.tf <<EOF
+          terraform {
+            backend "s3" {
+              bucket       = "${{ secrets.TF_STATE_BUCKET }}"
+              key          = "cp3/terraform.tfstate"
+              region       = "${AWS_REGION}"
+              encrypt      = true
+              use_lockfile = true
+            }
+          }
+          EOF
+
+      - name: Terraform init
+        working-directory: terraform
+        run: terraform init -input=false
+
+      - name: Terraform validate
+        working-directory: terraform
+        run: terraform validate
+
+      - name: Terraform apply
+        working-directory: terraform
+        run: terraform apply -auto-approve -input=false
+
+      - name: Resumo do deploy
+        working-directory: terraform
+        run: |
+          {
+            echo "### Deploy concluído :rocket:"
+            echo ""
+            echo "- **Endpoint:** $(terraform output -raw selecionar_endpoint 2>/dev/null || echo n/d)"
+            echo "- **Dashboard:** $(terraform output -raw dashboard_url 2>/dev/null || echo n/d)"
+          } >> "$GITHUB_STEP_SUMMARY"
