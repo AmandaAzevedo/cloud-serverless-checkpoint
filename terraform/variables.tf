@@ -27,3 +27,10 @@ variable "app_version" {
   type        = string
   default     = "local"
 }
+
+variable "bedrock_model_id" {
+  description = "ID do modelo do Amazon Bedrock usado para classificar a casa (Chapéu Seletor IA)."
+  type        = string
+  default     = "amazon.nova-lite-v1:0"
+}
+

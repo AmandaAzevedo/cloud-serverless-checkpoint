@@ -1,5 +1,5 @@
 {
-  "Comment": "Orquestração nativa: Map (lote) → Sortear → Choice por casa → Persistir (e-mail único) → Notificar (SES). Falha no envio do e-mail vai para a DLQ (retry + catch).",
+  "Comment": "Projeto Final: IA (Bedrock) decide a casa + justificativa, com fallback (MathRandom). Orquestra classificação → persistência (e-mail único) → notificação (SES), com retry, rollback e DLQ.",
   "StartAt": "Processar",
   "States": {
     "Processar": {
@@ -7,23 +7,70 @@
       "ItemsPath": "$.alunos",
       "ItemProcessor": {
         "ProcessorConfig": { "Mode": "INLINE" },
-        "StartAt": "Sortear",
+        "StartAt": "ClassificarComIA",
         "States": {
-          "Sortear": {
+          "ClassificarComIA": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::bedrock:invokeModel",
+            "Comment": "O 'Chapéu Seletor' usa um LLM (Amazon Bedrock) para escolher a casa.",
+            "Parameters": {
+              "ModelId": "${BedrockModelId}",
+              "Body": {
+                "messages": [
+                  {
+                    "role": "user",
+                    "content": [
+                      { "text": "Você é o Chapéu Seletor de Hogwarts. Em UMA frase curta em português, diga a casa do aluno (use exatamente um destes nomes: Grifinória, Sonserina, Corvinal ou Lufa-Lufa) e o motivo. Comece a frase pelo nome da casa. Nome do aluno:" },
+                      { "text.$": "$.nome" }
+                    ]
+                  }
+                ],
+                "inferenceConfig": { "maxTokens": 200, "temperature": 0.7 }
+              }
+            },
+            "ResultSelector": { "texto.$": "$.Body.output.message.content[0].text" },
+            "ResultPath": "$.ia",
+            "Retry": [
+              { "ErrorEquals": ["Bedrock.ThrottlingException", "Bedrock.ModelTimeoutException"], "IntervalSeconds": 1, "MaxAttempts": 2, "BackoffRate": 2.0 }
+            ],
+            "Catch": [
+              { "ErrorEquals": ["States.ALL"], "ResultPath": "$.iaErro", "Next": "SortearFallback" }
+            ],
+            "Next": "InterpretarIA"
+          },
+          "InterpretarIA": {
+            "Type": "Choice",
+            "Comment": "Detecta a casa no texto da IA (tolera markdown/texto extra). Sem casa reconhecida → fallback.",
+            "Choices": [
+              { "Variable": "$.ia.texto", "StringMatches": "*Grifinória*", "Next": "CasaGrifinoria" },
+              { "Variable": "$.ia.texto", "StringMatches": "*Sonserina*", "Next": "CasaSonserina" },
+              { "Variable": "$.ia.texto", "StringMatches": "*Corvinal*", "Next": "CasaCorvinal" },
+              { "Variable": "$.ia.texto", "StringMatches": "*Lufa*", "Next": "CasaLufaLufa" }
+            ],
+            "Default": "SortearFallback"
+          },
+          "CasaGrifinoria": { "Type": "Pass", "Parameters": { "nome.$": "$.nome", "email.$": "$.email", "casa": "Grifinória", "justificativa.$": "$.ia.texto", "origem": "ia" }, "Next": "RamificarPorCasa" },
+          "CasaSonserina": { "Type": "Pass", "Parameters": { "nome.$": "$.nome", "email.$": "$.email", "casa": "Sonserina", "justificativa.$": "$.ia.texto", "origem": "ia" }, "Next": "RamificarPorCasa" },
+          "CasaCorvinal": { "Type": "Pass", "Parameters": { "nome.$": "$.nome", "email.$": "$.email", "casa": "Corvinal", "justificativa.$": "$.ia.texto", "origem": "ia" }, "Next": "RamificarPorCasa" },
+          "CasaLufaLufa": { "Type": "Pass", "Parameters": { "nome.$": "$.nome", "email.$": "$.email", "casa": "Lufa-Lufa", "justificativa.$": "$.ia.texto", "origem": "ia" }, "Next": "RamificarPorCasa" },
+          "SortearFallback": {
             "Type": "Pass",
+            "Comment": "IA indisponível → sorteio aleatório (degradação graciosa).",
             "Parameters": {
               "nome.$": "$.nome",
               "email.$": "$.email",
               "indice.$": "States.MathRandom(0, 3)"
             },
-            "Next": "EscolherCasa"
+            "Next": "EscolherCasaFallback"
           },
-          "EscolherCasa": {
+          "EscolherCasaFallback": {
             "Type": "Pass",
             "Parameters": {
               "nome.$": "$.nome",
               "email.$": "$.email",
-              "casa.$": "States.ArrayGetItem(States.Array('Grifinória', 'Sonserina', 'Corvinal', 'Lufa-Lufa'), $.indice)"
+              "casa.$": "States.ArrayGetItem(States.Array('Grifinória', 'Sonserina', 'Corvinal', 'Lufa-Lufa'), $.indice)",
+              "justificativa": "Seleção por sorteio (IA indisponível).",
+              "origem": "aleatorio"
             },
             "Next": "RamificarPorCasa"
           },
@@ -49,6 +96,8 @@
                 "email": { "S.$": "$.email" },
                 "nome": { "S.$": "$.nome" },
                 "casa": { "S.$": "$.casa" },
+                "justificativa": { "S.$": "$.justificativa" },
+                "origem": { "S.$": "$.origem" },
                 "notificado": { "BOOL": false },
                 "criado_em": { "S.$": "$$.State.EnteredTime" }
               },
@@ -56,16 +105,7 @@
             },
             "ResultPath": null,
             "Retry": [
-              {
-                "ErrorEquals": [
-                  "DynamoDB.InternalServerError",
-                  "DynamoDB.ThrottlingException",
-                  "DynamoDB.ProvisionedThroughputExceededException"
-                ],
-                "IntervalSeconds": 1,
-                "MaxAttempts": 3,
-                "BackoffRate": 2.0
-              }
+              { "ErrorEquals": ["DynamoDB.InternalServerError", "DynamoDB.ThrottlingException", "DynamoDB.ProvisionedThroughputExceededException"], "IntervalSeconds": 1, "MaxAttempts": 3, "BackoffRate": 2.0 }
             ],
             "Catch": [
               { "ErrorEquals": ["DynamoDB.ConditionalCheckFailedException"], "ResultPath": "$.erro", "Next": "EmailDuplicado" }
@@ -82,19 +122,37 @@
                 "Subject": { "Data": "Chapéu Seletor" },
                 "Body": {
                   "Text": {
-                    "Data.$": "States.Format('{} foi selecionado(a) para {}! {}', $.nome, $.casa, $.ramo.lema)"
+                    "Data.$": "States.Format('Ola {}! O Chapeu Seletor escolheu a casa {}. {} Motivo: {}', $.nome, $.casa, $.ramo.lema, $.justificativa)"
                   }
                 }
               }
             },
             "ResultPath": null,
             "Retry": [
-              { "ErrorEquals": ["States.ALL"], "IntervalSeconds": 1, "MaxAttempts": 2, "BackoffRate": 2.0 }
+              { "ErrorEquals": ["Ses.ThrottlingException", "Lambda.ServiceException"], "IntervalSeconds": 1, "MaxAttempts": 2, "BackoffRate": 2.0 }
             ],
             "Catch": [
               { "ErrorEquals": ["States.ALL"], "ResultPath": "$.erro", "Next": "DesfazerCadastro" }
             ],
             "Next": "MarcarNotificado"
+          },
+          "MarcarNotificado": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Parameters": {
+              "TableName": "${TableName}",
+              "Key": { "email": { "S.$": "$.email" } },
+              "UpdateExpression": "SET notificado = :v",
+              "ExpressionAttributeValues": { ":v": { "BOOL": true } }
+            },
+            "ResultPath": null,
+            "Retry": [
+              { "ErrorEquals": ["DynamoDB.InternalServerError", "DynamoDB.ThrottlingException", "DynamoDB.ProvisionedThroughputExceededException"], "IntervalSeconds": 1, "MaxAttempts": 3, "BackoffRate": 2.0 }
+            ],
+            "Catch": [
+              { "ErrorEquals": ["States.ALL"], "ResultPath": "$.erro", "Next": "Sucesso" }
+            ],
+            "Next": "Sucesso"
           },
           "DesfazerCadastro": {
             "Type": "Task",
@@ -106,54 +164,16 @@
             },
             "ResultPath": null,
             "Retry": [
-              {
-                "ErrorEquals": [
-                  "DynamoDB.InternalServerError",
-                  "DynamoDB.ThrottlingException",
-                  "DynamoDB.ProvisionedThroughputExceededException"
-                ],
-                "IntervalSeconds": 1,
-                "MaxAttempts": 3,
-                "BackoffRate": 2.0
-              }
+              { "ErrorEquals": ["DynamoDB.InternalServerError", "DynamoDB.ThrottlingException", "DynamoDB.ProvisionedThroughputExceededException"], "IntervalSeconds": 1, "MaxAttempts": 3, "BackoffRate": 2.0 }
             ],
             "Catch": [
               { "ErrorEquals": ["States.ALL"], "ResultPath": "$.erro", "Next": "NotificacaoParaDLQ" }
             ],
             "Next": "NotificacaoParaDLQ"
           },
-          "MarcarNotificado": {
-            "Type": "Task",
-            "Resource": "arn:aws:states:::dynamodb:updateItem",
-            "Comment": "Marca notificado=true após o envio do e-mail dar certo.",
-            "Parameters": {
-              "TableName": "${TableName}",
-              "Key": { "email": { "S.$": "$.email" } },
-              "UpdateExpression": "SET notificado = :v",
-              "ExpressionAttributeValues": { ":v": { "BOOL": true } }
-            },
-            "ResultPath": null,
-            "Retry": [
-              {
-                "ErrorEquals": [
-                  "DynamoDB.InternalServerError",
-                  "DynamoDB.ThrottlingException",
-                  "DynamoDB.ProvisionedThroughputExceededException"
-                ],
-                "IntervalSeconds": 1,
-                "MaxAttempts": 3,
-                "BackoffRate": 2.0
-              }
-            ],
-            "Catch": [
-              { "ErrorEquals": ["States.ALL"], "ResultPath": "$.erro", "Next": "Sucesso" }
-            ],
-            "Next": "Sucesso"
-          },
           "NotificacaoParaDLQ": {
             "Type": "Task",
             "Resource": "arn:aws:states:::sqs:sendMessage",
-            "Comment": "O e-mail falhou; o cadastro foi desfeito e a mensagem vai para a DLQ.",
             "Parameters": {
               "QueueUrl": "${DlqUrl}",
               "MessageBody.$": "$"
@@ -166,6 +186,9 @@
             "Parameters": {
               "nome.$": "$.nome",
               "email.$": "$.email",
+              "casa.$": "$.casa",
+              "justificativa.$": "$.justificativa",
+              "origem.$": "$.origem",
               "status": "cancelado",
               "motivo": "Falha no envio do e-mail; cadastro desfeito.",
               "enviadoParaDLQ": true
@@ -179,6 +202,8 @@
               "email.$": "$.email",
               "casa.$": "$.casa",
               "lema.$": "$.ramo.lema",
+              "justificativa.$": "$.justificativa",
+              "origem.$": "$.origem",
               "status": "cadastrado",
               "notificado": true
             },

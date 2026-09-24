@@ -84,6 +84,13 @@ data "aws_iam_policy_document" "sfn" {
     actions   = ["ses:SendEmail", "ses:SendRawEmail"]
     resources = ["*"]
   }
+
+  statement {
+    sid       = "ClassificarComIA"
+    actions   = ["bedrock:InvokeModel"]
+    resources = ["arn:aws:bedrock:${var.region}::foundation-model/${var.bedrock_model_id}"]
+  }
+  
   statement {
     sid = "LogsDoStepFunctions"
     actions = [
@@ -117,9 +124,10 @@ resource "aws_sfn_state_machine" "orquestrador" {
   type     = "EXPRESS"
 
   definition = templatefile("${path.module}/../statemachine.asl.json", {
-    TableName   = aws_dynamodb_table.selecoes.name
-    DlqUrl      = aws_sqs_queue.dlq.url
-    SenderEmail = var.sender_email
+    TableName      = aws_dynamodb_table.selecoes.name
+    DlqUrl         = aws_sqs_queue.dlq.url
+    SenderEmail    = var.sender_email
+    BedrockModelId = var.bedrock_model_id
   })
 
   logging_configuration {
