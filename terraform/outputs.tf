@@ -27,3 +27,8 @@ output "sender_email" {
   description = "E-mail remetente das notificações (precisa estar verificado no SES)."
   value       = var.sender_email
 }
+
+output "dashboard_url" {
+  description = "URL do dashboard CloudWatch."
+  value       = "https://${var.region}.console.aws.amazon.com/cloudwatch/home?region=${var.region}#dashboards/dashboard/${aws_cloudwatch_dashboard.observabilidade.dashboard_name}"
+}

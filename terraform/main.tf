@@ -207,3 +207,10 @@ resource "aws_lambda_permission" "api_public_url" {
   principal              = "*"
   function_url_auth_type = "NONE"
 }
+
+data "aws_caller_identity" "atual" {}
+
+resource "aws_cloudwatch_dashboard" "observabilidade" {
+  dashboard_name = "${var.prefix}-observabilidade"
+  dashboard_body = jsonencode(local.dashboard)
+}

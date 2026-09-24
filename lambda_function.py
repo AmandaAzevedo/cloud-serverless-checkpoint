@@ -18,6 +18,7 @@ import base64
 import json
 import logging
 import os
+import time
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -25,8 +26,46 @@ logger.setLevel(logging.INFO)
 ROTA_SELECIONAR = "/v1/selecionar"
 ROTA_ALUNOS = "/v1/alunos"
 
+# Namespace das métricas customizadas (CloudWatch / EMF).
+NAMESPACE_METRICAS = "ChapeuSeletor"
+
 _sfn = None
 _dynamodb = None
+
+
+# ---------------------------------------------------------------------------
+# Observabilidade: logging estruturado (JSON) e métricas via EMF.
+# ---------------------------------------------------------------------------
+def _log(evento: str, **campos) -> None:
+    """Emite um log estruturado em JSON (consultável no CloudWatch Logs Insights)."""
+    logger.info(json.dumps({"evento": evento, **campos}, ensure_ascii=False))
+
+
+def _metricas(valores: dict, dimensoes: dict, unidades: dict | None = None, extra: dict | None = None) -> None:
+    """Emite métricas no formato EMF; o CloudWatch as extrai automaticamente do log.
+
+    valores:   {"Cadastros": 1, ...}
+    dimensoes: {"Endpoint": "selecionar"}
+    unidades:  {"LatenciaMs": "Milliseconds"}  (default: Count)
+    """
+    unidades = unidades or {}
+    documento = {
+        "_aws": {
+            "Timestamp": int(time.time() * 1000),
+            "CloudWatchMetrics": [
+                {
+                    "Namespace": NAMESPACE_METRICAS,
+                    "Dimensions": [list(dimensoes.keys())],
+                    "Metrics": [{"Name": nome, "Unit": unidades.get(nome, "Count")} for nome in valores],
+                }
+            ],
+        },
+        **dimensoes,
+        **valores,
+    }
+    if extra:
+        documento.update(extra)
+    print(json.dumps(documento, ensure_ascii=False))
 
 
 def _sfn_client():
@@ -111,21 +150,52 @@ def _selecionar(event: dict) -> dict:
             return _resposta_json({"erro": "'nome' e 'email' são obrigatórios."}, 400)
         alunos.append({"nome": nome, "email": email})
 
+    inicio = time.time()
     resposta = _sfn_client().start_sync_execution(
         stateMachineArn=os.environ["STATE_MACHINE_ARN"],
         input=json.dumps({"alunos": alunos}, ensure_ascii=False),
     )
+    latencia_ms = int((time.time() - inicio) * 1000)
 
-    if resposta.get("status") == "SUCCEEDED":
-        saida = json.loads(resposta.get("output") or "[]")
-        # Desembrulha quando há um único aluno.
-        resultado = saida[0] if isinstance(saida, list) and len(saida) == 1 else saida
-        return _resposta_json({"status": "ok", "resultado": resultado})
+    if resposta.get("status") != "SUCCEEDED":
+        _log("selecao_falhou", latencia_ms=latencia_ms, erro=resposta.get("error"), causa=resposta.get("cause"))
+        _metricas({"FluxoFalhou": 1}, {"Endpoint": "selecionar"})
+        return _resposta_json(
+            {"status": "falha", "erro": resposta.get("error"), "causa": resposta.get("cause")}, 502
+        )
 
-    logger.error("Execução falhou: %s / %s", resposta.get("error"), resposta.get("cause"))
-    return _resposta_json(
-        {"status": "falha", "erro": resposta.get("error"), "causa": resposta.get("cause")}, 502
+    saida = json.loads(resposta.get("output") or "[]")
+
+    # Contabiliza os resultados por status e por casa para as métricas.
+    contagem = {"cadastrado": 0, "duplicado": 0, "cancelado": 0}
+    for r in saida:
+        status = r.get("status", "desconhecido")
+        contagem[status] = contagem.get(status, 0) + 1
+        if status == "cadastrado" and r.get("casa"):
+            _metricas({"SelecoesPorCasa": 1}, {"Casa": r["casa"]})
+
+    _log(
+        "selecao_processada",
+        total=len(saida),
+        latencia_ms=latencia_ms,
+        cadastrados=contagem["cadastrado"],
+        duplicados=contagem["duplicado"],
+        cancelados=contagem["cancelado"],
     )
+    _metricas(
+        {
+            "Cadastros": contagem["cadastrado"],
+            "Duplicados": contagem["duplicado"],
+            "Cancelados": contagem["cancelado"],
+            "LatenciaFluxoMs": latencia_ms,
+        },
+        {"Endpoint": "selecionar"},
+        unidades={"LatenciaFluxoMs": "Milliseconds"},
+    )
+
+    # Desembrulha quando há um único aluno.
+    resultado = saida[0] if isinstance(saida, list) and len(saida) == 1 else saida
+    return _resposta_json({"status": "ok", "resultado": resultado})
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +215,8 @@ def _listar() -> dict:
         for item in resposta.get("Items", [])
     ]
     alunos.sort(key=lambda a: a["nome"].lower())
+    _log("alunos_listados", total=len(alunos))
+    _metricas({"Consultas": 1, "AlunosNaBase": len(alunos)}, {"Endpoint": "alunos"})
     return _resposta_json({"total": len(alunos), "alunos": alunos})
 
 

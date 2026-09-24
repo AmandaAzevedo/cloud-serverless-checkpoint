@@ -1,137 +1,236 @@
-# Checkpoint 3 - Chapéu Seletor Serverless (Orquestração)
+# Checkpoint 4 — Chapéu Seletor Serverless: Observabilidade
 
-Este projeto evolui o Checkpoint 2 para uma orquestração de serviços com o AWS
-Step Functions (equivalente ao Google Cloud Workflows). Uma **única Lambda**
-expõe os endpoints HTTP; toda a lógica de negócio roda **dentro do Step Functions
-com integrações nativas** — sem Lambda no fluxo. O cadastro exige **nome e e-mail**,
-o **e-mail é único** na base, e o aluno é **notificado por e-mail** (SES).
+Pipeline serverless **event-driven** na AWS que simula o Chapéu Seletor de
+Hogwarts: um aluno é cadastrado (nome + e-mail), o sistema sorteia a casa,
+persiste o resultado e **notifica por e-mail**. Toda a lógica é orquestrada por
+**Step Functions** com integrações nativas (sem Lambda no fluxo).
 
-* `POST /v1/selecionar` → a Lambda inicia a execução do fluxo e devolve o resultado.
-* `GET  /v1/alunos`     → a Lambda lista os alunos gravados (lê o DynamoDB).
+O foco deste checkpoint é a **observabilidade**: o serviço foi instrumentado com
+**logging estruturado** e **métricas customizadas** no **AWS CloudWatch**, com um
+**dashboard** e uma **análise crítica de performance e custo** com otimizações
+fundamentadas em dados reais.
 
-Dentro do Step Functions (tudo nativo, sem Lambda), na ordem:
-* **Map** — processa vários alunos (lote) numa única execução;
-* **Sortear** (`States.MathRandom`) → escolhe a casa;
-* **Choice** — ramifica por casa, atribuindo um lema a cada uma;
-* **Persistir** (`dynamodb:putItem` com `attribute_not_exists(email)`) — **idempotência / e-mail único**;
-* **Notificar** (`ses:sendEmail`) → envia o resultado para o e-mail do aluno;
-* **MarcarNotificado** (`dynamodb:updateItem`) → em caso de sucesso, marca `notificado = true`;
-* **Retry** no envio do e-mail e, se ainda assim falhar, **rollback** (`dynamodb:deleteItem`)
-  + **Catch → SQS DLQ** — o cadastro é **desfeito** (transação compensatória).
-
-## Regras de cadastro
-* **E-mail obrigatório:** requisição sem `nome` e `email` retorna `400`.
-* **E-mail único:** e-mail já cadastrado retorna `status: "duplicado"` (não regrava).
-* **Notificação obrigatória:** se o e-mail não for enviado, o cadastro é **desfeito**
-  (`status: "cancelado"`); só permanecem na base alunos que foram notificados.
-* A listagem inclui `notificado` (true/false) de cada aluno.
+## Sumário
+- [Arquitetura](#arquitetura)
+- [API (endpoints)](#api-endpoints)
+- [Código da Lambda](#código-da-lambda-lambda_functionpy)
+- [Fluxo do Step Functions](#fluxo-do-step-functions-statemachineasljson)
+- [Infraestrutura (Terraform)](#infraestrutura-terraform)
+- [Observabilidade (Checkpoint 4)](#observabilidade-checkpoint-4)
+- [Evidências (prints)](#evidências-prints)
+- [Análise crítica e otimizações](#análise-crítica-de-performance-e-custo)
+- [Como rodar, testar e implantar](#como-rodar-testar-e-implantar)
+- [Segurança](#segurança)
+- [Estrutura do repositório](#estrutura-do-repositório)
 
 ## Arquitetura
 
-![Arquitetura do Checkpoint 3](docs/arquitetura.svg)
+![Arquitetura](docs/arquitetura.svg)
 
-> Diagrama editável em [`docs/arquitetura.drawio`](docs/arquitetura.drawio) (abra no [draw.io](https://app.diagrams.net)).
-> A definição do fluxo está em [`statemachine.asl.json`](statemachine.asl.json).
+**Provedor:** AWS — **Lambda** (HTTP), **Step Functions** (orquestração),
+**DynamoDB** (dados), **SQS** (dead-letter queue), **SES** (e-mail) e
+**CloudWatch** (observabilidade).
 
-## Provedor Utilizado
-* AWS (Step Functions + Lambda + DynamoDB + SQS + SES)
+Fluxo de uma seleção:
 
-## Como rodar localmente
+1. A **Lambda** recebe o HTTP e inicia a execução **síncrona** do Step Functions.
+2. O Step Functions **sorteia** a casa, atribui um **lema**, **persiste** no
+   DynamoDB (e-mail único) e **notifica** por e-mail (SES).
+3. Se o e-mail falhar, faz **rollback** (desfaz o cadastro) e envia a mensagem
+   para a **DLQ**.
+4. A Lambda mede a latência, **loga** de forma estruturada e **emite métricas**.
 
-### Pré-requisitos
-* Python instalado (versão 3.9 ou superior)
-* Terminal de comandos aberto
+## API (endpoints)
 
-### Passo a passo
-1. Clone o repositório para sua máquina: git clone https://github.com/AmandaAzevedo/cloud-serverless-checkpoint.git
+A mesma Function URL atende dois caminhos:
 
-2. Entre na pasta do projeto: cd cloud-serveless-checkpoint
-
-3. Instale as dependências do projeto:
-   (não há dependências — a função usa apenas a biblioteca padrão do Python)
-
-4. Rode os testes locais:
-   python3 -m unittest -v
-
-## Como testar na nuvem
-
-As URLs (`<selecionar_endpoint>` e `<list_endpoint>`) são a mesma Function URL
-com caminhos diferentes, impressas como outputs do Terraform.
-
-**Cadastrar um aluno** (nome + e-mail obrigatórios) — executa o fluxo e notifica:
-
-    curl -X POST "<selecionar_endpoint>" -H "Content-Type: application/json" \
-      -d '{"nome":"Nome","email":"meuemailvalido@exemplo.com"}'
-    # {"status":"ok","resultado":{"status":"cadastrado","notificado":true,"casa":"Corvinal","nome":"Nome","email":"meuemailvalido@exemplo.com","lema":"..."}}
-
-**E-mail único** — repetir o mesmo e-mail não regrava:
-
-    curl -X POST "<selecionar_endpoint>" -H "Content-Type: application/json" \
-      -d '{"nome":"Outra","email":"meuemailvalido@exemplo.com"}'
-    # {"status":"ok","resultado":{"status":"duplicado","mensagem":"E-mail já cadastrado."}}
-
-**E-mail obrigatório** — sem e-mail retorna 400:
-
-    curl -X POST "<selecionar_endpoint>" -H "Content-Type: application/json" -d '{"nome":"Nome"}'
-    # {"erro":"'nome' e 'email' são obrigatórios."}
-
-**Lote (Map)** — vários alunos numa execução:
-
-    curl -X POST "<selecionar_endpoint>" -H "Content-Type: application/json" \
-      -d '{"alunos":[{"nome":"Fred","email":"fred@x.com"},{"nome":"Jorge","email":"jorge@x.com"}]}'
-
-**Retry + rollback + DLQ** — cadastre com um e-mail **não verificado** (em sandbox,
-o envio falha): a notificação é reenviada (retry) e, ao falhar, o cadastro é
-**desfeito** (rollback) e a mensagem vai para a DLQ.
-
-    curl -X POST "<selecionar_endpoint>" -H "Content-Type: application/json" \
-      -d '{"nome":"Fantasma","email":"nao-verificado@exemplo.com"}'
-    # {"status":"ok","resultado":{"status":"cancelado","motivo":"Falha no envio do e-mail; cadastro desfeito.","enviadoParaDLQ":true,...}}
-
-**Listar os alunos gravados** (nome, e-mail, casa, notificado):
-
-    curl "<list_endpoint>"
-    # {"total":1,"alunos":[{"nome":"Nome","email":"...","casa":"...","notificado":true,...}]}
-
-## Conceitos de orquestração demonstrados
-
-Cada execução é registrada em CloudWatch (`/aws/vendedlogs/states/chapeu-seletor-cp3`)
-e visível no console do Step Functions.
-
-| Conceito | Como é demonstrado | Evidência |
+| Método | Caminho | Descrição |
 |---|---|---|
-| Chamar na ordem correta | `Sortear → EscolherCasa → Choice → Persistir → Notificar → Sucesso` | histórico da execução |
-| Gerenciar respostas | saída de um estado alimenta o próximo; execução devolve o resultado | output da execução |
-| Idempotência | `attribute_not_exists(email)`; duplicado → `EmailDuplicado` | `status: "duplicado"` |
-| Retry | política `Retry` com backoff no envio do e-mail | tentativas no histórico |
-| Rollback (compensação) | e-mail falha → `DesfazerCadastro` (`dynamodb:deleteItem`) | `status: "cancelado"`; aluno some da listagem |
-| Dead-letter queue | falha no envio do e-mail → `Catch → sqs:sendMessage` → `chapeu-seletor-cp3-dlq` | mensagem na SQS (`Ses.MessageRejectedException`) |
+| `POST` | `/v1/selecionar` | Cadastra 1 aluno (`{"nome","email"}`) ou vários (`{"alunos":[...]}`) |
+| `GET`  | `/v1/alunos` | Lista os alunos cadastrados |
 
-## Notificação por e-mail (SES)
+Regras: **e-mail obrigatório** e **único**; se o e-mail não puder ser enviado, o
+cadastro é **cancelado** (rollback).
 
-O estado `Notificar` usa o Amazon SES. Como a conta inicia em **sandbox**:
-* o **remetente** (`sender_email`) precisa ser verificado no SES;
-* enquanto em sandbox, o **destinatário** também precisa ser verificado
-  (para enviar a qualquer e-mail, solicite *production access* no console do SES).
+## Código da Lambda (`lambda_function.py`)
 
-Quando o envio falha (ex.: destinatário não verificado), o fluxo faz `Retry` e,
-persistindo a falha, **desfaz o cadastro** (`dynamodb:deleteItem`) e envia a
-mensagem para a **DLQ** via `Catch` — o aluno **não permanece** na base
-(`status: cancelado`). Assim, só ficam cadastrados os alunos efetivamente
-notificados.
+Uma **única função** (`lambda_handler`) roteia por caminho + método:
 
-## Deploy na nuvem (Terraform)
+- **`_selecionar(event)`** — valida a entrada, chama `StartSyncExecution` no Step
+  Functions, mede a **latência**, e emite **log estruturado** + **métricas** por
+  status (`Cadastros`, `Duplicados`, `Cancelados`) e por casa (`SelecoesPorCasa`).
+- **`_listar()`** — faz `Scan` no DynamoDB e emite métricas `Consultas` /
+  `AlunosNaBase`.
+- **Instrumentação** (núcleo do checkpoint):
+  - `_log(evento, **campos)` → um log JSON por evento.
+  - `_metricas(valores, dimensoes, unidades)` → métricas no formato **EMF**.
 
-Requer Terraform e AWS CLI configurado (`aws configure`).
+Sem dependências externas — apenas a biblioteca padrão do Python + `boto3` (já no
+runtime da Lambda).
 
-    cd cp3/terraform
+## Fluxo do Step Functions (`statemachine.asl.json`)
+
+State machine **Express**, do tipo **Map** (processa lote de alunos), com estas
+etapas por aluno:
+
+| Estado | Tipo | O que faz |
+|---|---|---|
+| `Sortear` → `EscolherCasa` | Pass | Sorteia a casa (`States.MathRandom` + `ArrayGetItem`) |
+| `RamificarPorCasa` + `Lema*` | Choice/Pass | Atribui o lema conforme a casa |
+| `Persistir` | Task | `dynamodb:putItem` com `attribute_not_exists(email)` (idempotência) |
+| `Notificar` | Task | `ses:sendEmail`; **Retry** e, se falhar, `Catch` → rollback |
+| `MarcarNotificado` | Task | `dynamodb:updateItem` → `notificado=true` (sucesso) |
+| `DesfazerCadastro` | Task | **Rollback** `dynamodb:deleteItem` (falha de e-mail) |
+| `NotificacaoParaDLQ` | Task | `sqs:sendMessage` → DLQ |
+| `Sucesso` / `EmailDuplicado` / `CadastroCancelado` | Pass | Resultado final por aluno |
+
+Conceitos demonstrados: **orquestração na ordem correta**, **idempotência**,
+**retry** com backoff, **dead-letter queue** e **rollback** (compensação/saga).
+
+## Infraestrutura (Terraform)
+
+Toda a infra é definida em `terraform/` (state remoto no **S3**):
+
+| Arquivo | Conteúdo |
+|---|---|
+| `main.tf` | DynamoDB, SQS DLQ, SES, Step Functions (+IAM), Lambda (+Function URL/IAM), **dashboard CloudWatch** |
+| `locals.tf` | Definição do **dashboard** (widgets das métricas) |
+| `variables.tf` | `region`, `prefix`, `allowed_origins`, `sender_email` |
+| `outputs.tf` | `selecionar_endpoint`, `list_endpoint`, `state_machine_arn`, `dlq_url`, **`dashboard_url`** |
+| `backend.tf.example` | Modelo do backend S3 (o `backend.tf` real fica fora do Git) |
+
+**IAM mínimo (least privilege):** o Step Functions só pode `PutItem/UpdateItem/
+DeleteItem` na tabela, `SendMessage` na DLQ e `SendEmail`; a Lambda só pode
+`StartSyncExecution` e `Scan`.
+
+## Observabilidade (Checkpoint 4)
+
+### 1. Logging estruturado (JSON)
+Cada evento vira um log JSON com campos padronizados — ex.:
+`{"evento":"selecao_processada","latencia_ms":82,"cadastrados":0,"duplicados":1,...}`.
+Isso permite consultar e agregar no **CloudWatch Logs Insights**.
+
+### 2. Métricas customizadas (EMF)
+Emitidas no próprio log (**Embedded Metric Format**, sem chamadas extras à API),
+no namespace **`ChapeuSeletor`**: `Cadastros`, `Duplicados`, `Cancelados`,
+`LatenciaFluxoMs`, `SelecoesPorCasa` (por casa), `Consultas`, `AlunosNaBase`,
+`FluxoFalhou`.
+
+### 3. Métricas nativas
+Lambda (`Invocations`, `Errors`, `Duration`), Step Functions
+(`ExecutionsStarted/Succeeded/Failed`, `ExecutionTime`) e SQS (DLQ).
+
+### 4. Dashboard CloudWatch
+Provisionado por Terraform (`chapeu-seletor-cp3-observabilidade`), reunindo todas
+as métricas acima. A URL é o output `dashboard_url`.
+
+### Como visualizar
+Console → CloudWatch → **Logs Insights**, log group
+`/aws/lambda/chapeu-seletor-cp3-api`:
+
+```
+fields @timestamp, evento, cadastrados, duplicados, cancelados, latencia_ms
+| filter evento = "selecao_processada"
+| sort @timestamp desc | limit 20
+```
+
+## Evidências (prints)
+
+Screenshots que comprovam logs e métricas (em [`docs/prints/`](docs/prints/)):
+
+**Dashboard CloudWatch** — métricas de negócio, latência, Lambda, Step Functions,
+seleções por casa e DLQ, todas com dados reais:
+
+![Dashboard](docs/prints/dashboard.png)
+
+**Logs estruturados (CloudWatch Logs Insights)** — cada evento vira uma linha JSON
+consultável; note o contraste de `latencia_ms` (baixa sem envio, alta quando há
+falha de e-mail):
+
+![Logs Insights](docs/prints/logs-insights.png)
+
+> Os gráficos foram renderizados a partir das métricas reais do CloudWatch
+> (API `GetMetricWidgetImage`) e a tabela a partir do resultado real do Logs
+> Insights. Os widgets individuais também estão em `docs/prints/`.
+
+## Análise crítica de performance e custo
+
+Baseada em **métricas reais** coletadas no CloudWatch (8 seleções: 1 cadastro,
+1 duplicado, 6 cancelados + 4 consultas).
+
+| Métrica | Valor |
+|---|---|
+| Invocações da Lambda | 44 |
+| Duração da Lambda (média / máx) | 1.178 ms / 6.106 ms |
+| Latência do fluxo síncrono (média / máx) | 3.216 ms / 5.962 ms |
+| Tempo de execução do Step Functions (média) | 1.904 ms |
+| Latência — **duplicado** (sem envio) | **82 ms** |
+| Latência — **cancelado** (falha de e-mail) | **~3.300 ms** |
+| Mensagens enviadas à DLQ | 14 |
+
+**Performance:** a latência é dominada pelo **caminho de falha de e-mail** —
+82 ms vs ~3.300 ms (40x). A causa é o `Retry` do `Notificar` sobre um erro
+**permanente** (`Ses.MessageRejectedException`), que nunca teria sucesso.
+
+**Custo:** no modelo **síncrono**, cada segundo do fluxo é cobrado na **Lambda**
+**e** no **Step Functions Express** (ambos por tempo) — os ~3 s de retry inútil
+custam em dobro. E cada cancelado faz `putItem` + `deleteItem` (o dobro de
+escritas no DynamoDB).
+
+### Otimizações propostas
+
+1. **Não repetir erros permanentes do SES.** Restringir o `Retry` do `Notificar`
+   a erros transitórios (throttling/serviço). *Impacto:* latência da falha de
+   **~3,3 s → ~0,3 s**; corta tempo faturado em Lambda **e** Step Functions.
+2. **Notificar antes de persistir.** Reordenar para `Sortear → Notificar →
+   Persistir` elimina o rollback (`putItem` + `deleteItem`). *Impacto:* **−50%**
+   de escritas no DynamoDB no caminho de falha.
+3. **Reduzir o custo do bloqueio síncrono.** Execução assíncrona (`202 Accepted`)
+   em lotes, *tuning* de memória (Power Tuning) e retenção de logs. *Impacto:*
+   Lambda deixa de faturar a espera; controla o custo de observabilidade.
+
+## Como rodar, testar e implantar
+
+**Testes locais** (sem nuvem):
+
+    python3 -m unittest -v
+
+**Deploy** (Terraform + AWS CLI configurado):
+
+    cd terraform
     cp backend.tf.example backend.tf   # ajuste o nome do bucket (state no S3)
     # em terraform.tfvars, defina sender_email = "seu-email-verificado@dominio.com"
     terraform init
     terraform apply
 
-Passos manuais após o `apply`:
-1. **Function URL pública:** Lambda → `chapeu-seletor-cp3-api` → Configuration →
-   Function URL → Edit → Auth type NONE (senão o `curl` retorna 403).
-2. **Verificar o remetente SES:** clique no link do e-mail de verificação enviado
-   pela AWS para o `sender_email`.
+**Testar na nuvem:**
+
+    curl -X POST "<selecionar_endpoint>" -H "Content-Type: application/json" \
+      -d '{"nome":"Amanda","email":"seu-email-verificado@dominio.com"}'
+    curl "<list_endpoint>"
+
+**Passos manuais (uma vez):** verificar o remetente no **SES** e habilitar o
+acesso público da **Function URL** (Auth NONE) no Console.
+
+## Segurança
+
+- Nenhuma credencial, chave, `.json`/`.env` ou o `backend.tf`/`terraform.tfvars`
+  (com Account ID / dados sensíveis) é versionado — ver [`.gitignore`](.gitignore).
+- IAM por serviço com privilégio mínimo.
+- Logs/métricas registram apenas dados de negócio (nome, e-mail, casa).
+
+## Estrutura do repositório
+
+```
+.
+├── lambda_function.py          # Lambda (endpoints + instrumentação)
+├── statemachine.asl.json       # fluxo do Step Functions
+├── test_lambda_function.py     # testes unitários
+├── requirements.txt
+├── terraform/                  # infraestrutura (IaC) + dashboard
+│   ├── main.tf · locals.tf · variables.tf · outputs.tf
+│   └── backend.tf.example
+└── docs/
+    ├── arquitetura.svg / .drawio
+    └── prints/                 # evidências visuais (screenshots)
+```
