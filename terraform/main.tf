@@ -134,7 +134,13 @@ data "aws_iam_policy_document" "sfn" {
   statement {
     sid       = "EnviarEmail"
     actions   = ["ses:SendEmail", "ses:SendRawEmail"]
-    resources = [aws_ses_email_identity.remetente.arn]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "ses:FromAddress"
+      values   = [var.sender_email]
+    }
   }
 
   statement {
