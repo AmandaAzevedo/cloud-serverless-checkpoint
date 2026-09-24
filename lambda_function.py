@@ -25,6 +25,10 @@ logger.setLevel(logging.INFO)
 
 ROTA_SELECIONAR = "/v1/selecionar"
 ROTA_ALUNOS = "/v1/alunos"
+ROTA_VERSAO = "/v1/versao"
+
+# Versão da aplicação (bump manual). O commit é injetado no deploy (APP_VERSION).
+VERSAO = "1.0.0"
 
 # Namespace das métricas customizadas (CloudWatch / EMF).
 NAMESPACE_METRICAS = "ChapeuSeletor"
@@ -221,6 +225,20 @@ def _listar() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# GET /v1/versao → mostra a versão implantada (para verificar o deploy).
+# ---------------------------------------------------------------------------
+def _versao() -> dict:
+    dados = {
+        "versao": VERSAO,
+        "commit": os.environ.get("APP_VERSION", "desconhecido"),
+        "lambda_version": os.environ.get("AWS_LAMBDA_FUNCTION_VERSION", ""),
+        "consultado_em": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    _log("versao_consultada", versao=dados["versao"], commit=dados["commit"])
+    return _resposta_json(dados)
+
+
+# ---------------------------------------------------------------------------
 # Handler único: roteia por caminho + método.
 # ---------------------------------------------------------------------------
 def lambda_handler(event, context):
@@ -237,6 +255,11 @@ def lambda_handler(event, context):
             return _resposta_json({"erro": f"Use GET {ROTA_ALUNOS}"}, 405, {"Allow": "GET"})
         return _listar()
 
+    if caminho == ROTA_VERSAO:
+        if metodo != "GET":
+            return _resposta_json({"erro": f"Use GET {ROTA_VERSAO}"}, 405, {"Allow": "GET"})
+        return _versao()
+
     return _resposta_json(
-        {"erro": f"Rota não encontrada. Use POST {ROTA_SELECIONAR} ou GET {ROTA_ALUNOS}"}, 404
+        {"erro": f"Rota não encontrada. Use {ROTA_SELECIONAR}, {ROTA_ALUNOS} ou {ROTA_VERSAO}"}, 404
     )

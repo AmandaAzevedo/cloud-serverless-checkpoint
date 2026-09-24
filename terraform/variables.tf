@@ -21,3 +21,9 @@ variable "sender_email" {
   type        = string
   default     = ""
 }
+
+variable "app_version" {
+  description = "Identificador da versão implantada (ex.: SHA do commit). Exposto em GET /v1/versao."
+  type        = string
+  default     = "local"
+}

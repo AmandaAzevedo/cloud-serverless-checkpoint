@@ -46,6 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TF_VAR_sender_email: ${{ secrets.SENDER_EMAIL }}
+      TF_VAR_app_version: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
 
@@ -94,6 +95,8 @@ jobs:
           {
             echo "### Deploy concluído :rocket:"
             echo ""
+            echo "- **Commit implantado:** \`${{ github.sha }}\`"
             echo "- **Endpoint:** $(terraform output -raw selecionar_endpoint 2>/dev/null || echo n/d)"
+            echo "- **Versão:** $(terraform output -raw function_url_base 2>/dev/null || echo n/d)v1/versao"
             echo "- **Dashboard:** $(terraform output -raw dashboard_url 2>/dev/null || echo n/d)"
           } >> "$GITHUB_STEP_SUMMARY"

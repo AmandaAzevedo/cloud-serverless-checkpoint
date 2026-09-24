@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import lambda_function
-from lambda_function import ROTA_ALUNOS, ROTA_SELECIONAR, lambda_handler
+from lambda_function import ROTA_ALUNOS, ROTA_SELECIONAR, ROTA_VERSAO, VERSAO, lambda_handler
 
 
 def _evento(metodo, caminho, corpo=None):
@@ -107,6 +107,20 @@ class TestListar(unittest.TestCase):
 
     def test_metodo_errado_retorna_405(self):
         resp = lambda_handler(_evento("POST", ROTA_ALUNOS), None)
+        self.assertEqual(resp["statusCode"], 405)
+
+
+class TestVersao(unittest.TestCase):
+    @patch.dict("os.environ", {"APP_VERSION": "abc1234"})
+    def test_get_versao(self):
+        resp = lambda_handler(_evento("GET", ROTA_VERSAO), None)
+        self.assertEqual(resp["statusCode"], 200)
+        corpo = json.loads(resp["body"])
+        self.assertEqual(corpo["versao"], VERSAO)
+        self.assertEqual(corpo["commit"], "abc1234")
+
+    def test_versao_metodo_errado_retorna_405(self):
+        resp = lambda_handler(_evento("POST", ROTA_VERSAO), None)
         self.assertEqual(resp["statusCode"], 405)
 
 

@@ -184,6 +184,7 @@ resource "aws_lambda_function" "api" {
     variables = {
       STATE_MACHINE_ARN = aws_sfn_state_machine.orquestrador.arn
       TABLE_NAME        = aws_dynamodb_table.selecoes.name
+      APP_VERSION       = var.app_version
     }
   }
 }

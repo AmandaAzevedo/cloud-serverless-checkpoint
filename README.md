@@ -48,6 +48,7 @@ A mesma Function URL atende dois caminhos:
 |---|---|---|
 | `POST` | `/v1/selecionar` | Cadastra 1 aluno (`{"nome","email"}`) ou vários (`{"alunos":[...]}`) |
 | `GET`  | `/v1/alunos` | Lista os alunos cadastrados |
+| `GET`  | `/v1/versao` | Mostra a versão e o **commit** implantado (verifica se o deploy funcionou) |
 
 Regras: **e-mail obrigatório** e **único**; se o e-mail não puder ser enviado, o
 cadastro é **cancelado** (rollback).
