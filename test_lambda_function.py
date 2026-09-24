@@ -1,4 +1,4 @@
-"""Testes unitários das funções produtora, consumidora e listadora.
+"""Testes unitários da Lambda única do Checkpoint 3.
 
 Rodar com:  python -m unittest   (ou  python -m pytest)
 """
@@ -8,77 +8,89 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import lambda_function
-from lambda_function import (
-    CASAS,
-    ROTA_ALUNOS,
-    ROTA_SELECIONAR,
-    lambda_handler,
-    lister_handler,
-    publisher_handler,
-    selecionar_casa,
-)
+from lambda_function import ROTA_ALUNOS, ROTA_SELECIONAR, lambda_handler
 
 
-def _evento_sns(*mensagens):
-    return {"Records": [{"Sns": {"Message": m}} for m in mensagens]}
-
-
-def _evento_http(metodo, caminho, corpo=None):
+def _evento(metodo, caminho, corpo=None):
     event = {"requestContext": {"http": {"method": metodo, "path": caminho}}, "rawPath": caminho}
     if corpo is not None:
         event["body"] = corpo
     return event
 
 
-class TestConsumidora(unittest.TestCase):
-    def test_retorna_uma_casa_valida(self):
-        for _ in range(50):
-            self.assertIn(selecionar_casa("Amanda"), CASAS)
-
-    def test_processa_e_ignora_sem_gravar_quando_sem_tabela(self):
-        # Sem TABLE_NAME no ambiente, não tenta gravar no DynamoDB.
-        resultado = lambda_handler(_evento_sns(json.dumps({"nome": "Amanda"})), None)
-        self.assertEqual(resultado["processados"], 1)
-        self.assertIn(resultado["resultados"][0]["casa"], CASAS)
-
-    @patch.dict("os.environ", {"TABLE_NAME": "alunos-selecionados"})
-    def test_grava_no_dynamodb(self):
-        fake_db = MagicMock()
-        with patch.object(lambda_function, "_dynamodb_client", return_value=fake_db):
-            lambda_handler(_evento_sns(json.dumps({"nome": "Acerola"})), None)
-        fake_db.put_item.assert_called_once()
-        item = fake_db.put_item.call_args.kwargs["Item"]
-        self.assertEqual(item["nome"]["S"], "Acerola")
-        self.assertIn(item["casa"]["S"], CASAS)
-
-    def test_mensagem_sem_nome_e_ignorada(self):
-        self.assertEqual(lambda_handler(_evento_sns("{}"), None)["processados"], 0)
-
-
-class TestProdutora(unittest.TestCase):
-    @patch.dict("os.environ", {"TOPIC_ARN": "arn:aws:sns:us-east-1:000:alunos"})
-    def test_publica_e_retorna_202(self):
-        fake_sns = MagicMock()
-        fake_sns.publish.return_value = {"MessageId": "abc-123"}
-        with patch.object(lambda_function, "_sns_client", return_value=fake_sns):
-            resposta = publisher_handler(
-                _evento_http("POST", ROTA_SELECIONAR, json.dumps({"nome": "Amanda"})), None
+class TestSelecionar(unittest.TestCase):
+    @patch.dict("os.environ", {"STATE_MACHINE_ARN": "arn:sfn"})
+    def test_post_inicia_fluxo_e_retorna_resultado(self):
+        fake_sfn = MagicMock()
+        # A state machine (Map) devolve uma lista; para 1 nome, a Lambda desembrulha.
+        fake_sfn.start_sync_execution.return_value = {
+            "status": "SUCCEEDED",
+            "output": json.dumps([{"nome": "Amanda", "casa": "Corvinal", "idempotente": False}]),
+        }
+        with patch.object(lambda_function, "_sfn_client", return_value=fake_sfn):
+            resp = lambda_handler(
+                _evento("POST", ROTA_SELECIONAR, json.dumps({"nome": "Amanda", "email": "a@b.com"})), None
             )
-        self.assertEqual(resposta["statusCode"], 202)
-        self.assertEqual(json.loads(resposta["body"])["messageId"], "abc-123")
+        self.assertEqual(resp["statusCode"], 200)
+        corpo = json.loads(resp["body"])
+        self.assertEqual(corpo["resultado"]["casa"], "Corvinal")
+        entrada = json.loads(fake_sfn.start_sync_execution.call_args.kwargs["input"])
+        self.assertEqual(len(entrada["alunos"]), 1)
+        self.assertEqual(entrada["alunos"][0]["email"], "a@b.com")
+
+    @patch.dict("os.environ", {"STATE_MACHINE_ARN": "arn:sfn"})
+    def test_email_e_repassado(self):
+        fake_sfn = MagicMock()
+        fake_sfn.start_sync_execution.return_value = {"status": "SUCCEEDED", "output": "[]"}
+        with patch.object(lambda_function, "_sfn_client", return_value=fake_sfn):
+            lambda_handler(
+                _evento("POST", ROTA_SELECIONAR, json.dumps({"nome": "Amanda", "email": "a@b.com"})),
+                None,
+            )
+        entrada = json.loads(fake_sfn.start_sync_execution.call_args.kwargs["input"])
+        self.assertEqual(entrada["alunos"][0]["email"], "a@b.com")
+
+    @patch.dict("os.environ", {"STATE_MACHINE_ARN": "arn:sfn"})
+    def test_post_lote(self):
+        fake_sfn = MagicMock()
+        fake_sfn.start_sync_execution.return_value = {"status": "SUCCEEDED", "output": "[]"}
+        alunos = [
+            {"nome": "A", "email": "a@x.com"},
+            {"nome": "B", "email": "b@x.com"},
+            {"nome": "C", "email": "c@x.com"},
+        ]
+        with patch.object(lambda_function, "_sfn_client", return_value=fake_sfn):
+            lambda_handler(_evento("POST", ROTA_SELECIONAR, json.dumps({"alunos": alunos})), None)
+        entrada = json.loads(fake_sfn.start_sync_execution.call_args.kwargs["input"])
+        self.assertEqual(len(entrada["alunos"]), 3)
+        self.assertTrue(all(a["email"] for a in entrada["alunos"]))
+
+    @patch.dict("os.environ", {"STATE_MACHINE_ARN": "arn:sfn"})
+    def test_falha_do_fluxo_retorna_502(self):
+        fake_sfn = MagicMock()
+        fake_sfn.start_sync_execution.return_value = {"status": "FAILED", "error": "X", "cause": "Y"}
+        with patch.object(lambda_function, "_sfn_client", return_value=fake_sfn):
+            resp = lambda_handler(
+                _evento("POST", ROTA_SELECIONAR, json.dumps({"nome": "Amanda", "email": "a@b.com"})), None
+            )
+        self.assertEqual(resp["statusCode"], 502)
+
+    def test_sem_email_retorna_400(self):
+        resp = lambda_handler(_evento("POST", ROTA_SELECIONAR, json.dumps({"nome": "Amanda"})), None)
+        self.assertEqual(resp["statusCode"], 400)
 
     def test_sem_nome_retorna_400(self):
-        resposta = publisher_handler(_evento_http("POST", ROTA_SELECIONAR, "{}"), None)
-        self.assertEqual(resposta["statusCode"], 400)
+        resp = lambda_handler(_evento("POST", ROTA_SELECIONAR, "{}"), None)
+        self.assertEqual(resp["statusCode"], 400)
 
-    def test_get_retorna_405(self):
-        resposta = publisher_handler(_evento_http("GET", ROTA_SELECIONAR), None)
-        self.assertEqual(resposta["statusCode"], 405)
+    def test_metodo_errado_retorna_405(self):
+        resp = lambda_handler(_evento("GET", ROTA_SELECIONAR), None)
+        self.assertEqual(resp["statusCode"], 405)
 
 
-class TestListadora(unittest.TestCase):
-    @patch.dict("os.environ", {"TABLE_NAME": "alunos-selecionados"})
-    def test_lista_alunos(self):
+class TestListar(unittest.TestCase):
+    @patch.dict("os.environ", {"TABLE_NAME": "t"})
+    def test_get_lista_alunos(self):
         fake_db = MagicMock()
         fake_db.scan.return_value = {
             "Items": [
@@ -87,20 +99,21 @@ class TestListadora(unittest.TestCase):
             ]
         }
         with patch.object(lambda_function, "_dynamodb_client", return_value=fake_db):
-            resposta = lister_handler(_evento_http("GET", ROTA_ALUNOS), None)
-        self.assertEqual(resposta["statusCode"], 200)
-        corpo = json.loads(resposta["body"])
+            resp = lambda_handler(_evento("GET", ROTA_ALUNOS), None)
+        self.assertEqual(resp["statusCode"], 200)
+        corpo = json.loads(resp["body"])
         self.assertEqual(corpo["total"], 2)
-        # Ordenado por nome.
-        self.assertEqual(corpo["alunos"][0]["nome"], "Amanda")
+        self.assertEqual(corpo["alunos"][0]["nome"], "Amanda")  # ordenado
 
-    def test_post_retorna_405(self):
-        resposta = lister_handler(_evento_http("POST", ROTA_ALUNOS), None)
-        self.assertEqual(resposta["statusCode"], 405)
+    def test_metodo_errado_retorna_405(self):
+        resp = lambda_handler(_evento("POST", ROTA_ALUNOS), None)
+        self.assertEqual(resp["statusCode"], 405)
 
-    def test_rota_errada_retorna_404(self):
-        resposta = lister_handler(_evento_http("GET", "/v1/outra"), None)
-        self.assertEqual(resposta["statusCode"], 404)
+
+class TestRoteamento(unittest.TestCase):
+    def test_rota_desconhecida_retorna_404(self):
+        resp = lambda_handler(_evento("GET", "/v1/outra"), None)
+        self.assertEqual(resp["statusCode"], 404)
 
 
 if __name__ == "__main__":

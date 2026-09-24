@@ -1,0 +1,201 @@
+{
+  "Comment": "Orquestração nativa: Map (lote) → Sortear → Choice por casa → Persistir (e-mail único) → Notificar (SES). Falha no envio do e-mail vai para a DLQ (retry + catch).",
+  "StartAt": "Processar",
+  "States": {
+    "Processar": {
+      "Type": "Map",
+      "ItemsPath": "$.alunos",
+      "ItemProcessor": {
+        "ProcessorConfig": { "Mode": "INLINE" },
+        "StartAt": "Sortear",
+        "States": {
+          "Sortear": {
+            "Type": "Pass",
+            "Parameters": {
+              "nome.$": "$.nome",
+              "email.$": "$.email",
+              "indice.$": "States.MathRandom(0, 3)"
+            },
+            "Next": "EscolherCasa"
+          },
+          "EscolherCasa": {
+            "Type": "Pass",
+            "Parameters": {
+              "nome.$": "$.nome",
+              "email.$": "$.email",
+              "casa.$": "States.ArrayGetItem(States.Array('Grifinória', 'Sonserina', 'Corvinal', 'Lufa-Lufa'), $.indice)"
+            },
+            "Next": "RamificarPorCasa"
+          },
+          "RamificarPorCasa": {
+            "Type": "Choice",
+            "Choices": [
+              { "Variable": "$.casa", "StringEquals": "Grifinória", "Next": "LemaGrifinoria" },
+              { "Variable": "$.casa", "StringEquals": "Sonserina", "Next": "LemaSonserina" },
+              { "Variable": "$.casa", "StringEquals": "Corvinal", "Next": "LemaCorvinal" }
+            ],
+            "Default": "LemaLufaLufa"
+          },
+          "LemaGrifinoria": { "Type": "Pass", "Result": { "lema": "Coragem e determinação!" }, "ResultPath": "$.ramo", "Next": "Persistir" },
+          "LemaSonserina": { "Type": "Pass", "Result": { "lema": "Ambição e astúcia!" }, "ResultPath": "$.ramo", "Next": "Persistir" },
+          "LemaCorvinal": { "Type": "Pass", "Result": { "lema": "Sabedoria e engenho!" }, "ResultPath": "$.ramo", "Next": "Persistir" },
+          "LemaLufaLufa": { "Type": "Pass", "Result": { "lema": "Lealdade e trabalho!" }, "ResultPath": "$.ramo", "Next": "Persistir" },
+          "Persistir": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Parameters": {
+              "TableName": "${TableName}",
+              "Item": {
+                "email": { "S.$": "$.email" },
+                "nome": { "S.$": "$.nome" },
+                "casa": { "S.$": "$.casa" },
+                "notificado": { "BOOL": false },
+                "criado_em": { "S.$": "$$.State.EnteredTime" }
+              },
+              "ConditionExpression": "attribute_not_exists(email)"
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "DynamoDB.InternalServerError",
+                  "DynamoDB.ThrottlingException",
+                  "DynamoDB.ProvisionedThroughputExceededException"
+                ],
+                "IntervalSeconds": 1,
+                "MaxAttempts": 3,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              { "ErrorEquals": ["DynamoDB.ConditionalCheckFailedException"], "ResultPath": "$.erro", "Next": "EmailDuplicado" }
+            ],
+            "Next": "Notificar"
+          },
+          "Notificar": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:ses:sendEmail",
+            "Parameters": {
+              "Source": "${SenderEmail}",
+              "Destination": { "ToAddresses.$": "States.Array($.email)" },
+              "Message": {
+                "Subject": { "Data": "Chapéu Seletor" },
+                "Body": {
+                  "Text": {
+                    "Data.$": "States.Format('{} foi selecionado(a) para {}! {}', $.nome, $.casa, $.ramo.lema)"
+                  }
+                }
+              }
+            },
+            "ResultPath": null,
+            "Retry": [
+              { "ErrorEquals": ["States.ALL"], "IntervalSeconds": 1, "MaxAttempts": 2, "BackoffRate": 2.0 }
+            ],
+            "Catch": [
+              { "ErrorEquals": ["States.ALL"], "ResultPath": "$.erro", "Next": "DesfazerCadastro" }
+            ],
+            "Next": "MarcarNotificado"
+          },
+          "DesfazerCadastro": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::dynamodb:deleteItem",
+            "Comment": "Rollback: o e-mail falhou, então o cadastro é desfeito.",
+            "Parameters": {
+              "TableName": "${TableName}",
+              "Key": { "email": { "S.$": "$.email" } }
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "DynamoDB.InternalServerError",
+                  "DynamoDB.ThrottlingException",
+                  "DynamoDB.ProvisionedThroughputExceededException"
+                ],
+                "IntervalSeconds": 1,
+                "MaxAttempts": 3,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              { "ErrorEquals": ["States.ALL"], "ResultPath": "$.erro", "Next": "NotificacaoParaDLQ" }
+            ],
+            "Next": "NotificacaoParaDLQ"
+          },
+          "MarcarNotificado": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Comment": "Marca notificado=true após o envio do e-mail dar certo.",
+            "Parameters": {
+              "TableName": "${TableName}",
+              "Key": { "email": { "S.$": "$.email" } },
+              "UpdateExpression": "SET notificado = :v",
+              "ExpressionAttributeValues": { ":v": { "BOOL": true } }
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "DynamoDB.InternalServerError",
+                  "DynamoDB.ThrottlingException",
+                  "DynamoDB.ProvisionedThroughputExceededException"
+                ],
+                "IntervalSeconds": 1,
+                "MaxAttempts": 3,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              { "ErrorEquals": ["States.ALL"], "ResultPath": "$.erro", "Next": "Sucesso" }
+            ],
+            "Next": "Sucesso"
+          },
+          "NotificacaoParaDLQ": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage",
+            "Comment": "O e-mail falhou; o cadastro foi desfeito e a mensagem vai para a DLQ.",
+            "Parameters": {
+              "QueueUrl": "${DlqUrl}",
+              "MessageBody.$": "$"
+            },
+            "ResultPath": null,
+            "Next": "CadastroCancelado"
+          },
+          "CadastroCancelado": {
+            "Type": "Pass",
+            "Parameters": {
+              "nome.$": "$.nome",
+              "email.$": "$.email",
+              "status": "cancelado",
+              "motivo": "Falha no envio do e-mail; cadastro desfeito.",
+              "enviadoParaDLQ": true
+            },
+            "End": true
+          },
+          "Sucesso": {
+            "Type": "Pass",
+            "Parameters": {
+              "nome.$": "$.nome",
+              "email.$": "$.email",
+              "casa.$": "$.casa",
+              "lema.$": "$.ramo.lema",
+              "status": "cadastrado",
+              "notificado": true
+            },
+            "End": true
+          },
+          "EmailDuplicado": {
+            "Type": "Pass",
+            "Parameters": {
+              "email.$": "$.email",
+              "status": "duplicado",
+              "mensagem": "E-mail já cadastrado."
+            },
+            "End": true
+          }
+        }
+      },
+      "End": true
+    }
+  }
+}

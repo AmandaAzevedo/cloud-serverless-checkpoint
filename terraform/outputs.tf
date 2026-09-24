@@ -1,19 +1,29 @@
-output "http_endpoint" {
-  description = "URL pública (produtora) para testar com curl: POST /v1/selecionar."
-  value       = "${aws_lambda_function_url.publisher.function_url}v1/selecionar"
+output "selecionar_endpoint" {
+  description = "URL da Função Ativa — POST para selecionar um aluno."
+  value       = "${aws_lambda_function_url.api.function_url}v1/selecionar"
 }
 
 output "list_endpoint" {
-  description = "URL pública (listadora) para listar os alunos: GET /v1/alunos."
-  value       = "${aws_lambda_function_url.lister.function_url}v1/alunos"
+  description = "URL para listar os alunos: GET /v1/alunos."
+  value       = "${aws_lambda_function_url.api.function_url}v1/alunos"
 }
 
-output "sns_topic_arn" {
-  description = "ARN do tópico SNS onde as mensagens são publicadas."
-  value       = aws_sns_topic.eventos.arn
+output "function_url_base" {
+  description = "Base da Function URL (a mesma Lambda atende os dois caminhos)."
+  value       = aws_lambda_function_url.api.function_url
 }
 
-output "consumer_function_name" {
-  description = "Nome da função consumidora (veja os logs dela no CloudWatch)."
-  value       = aws_lambda_function.chapeu_seletor.function_name
+output "state_machine_arn" {
+  description = "ARN da state machine (Step Functions) que orquestra o fluxo."
+  value       = aws_sfn_state_machine.orquestrador.arn
+}
+
+output "dlq_url" {
+  description = "URL da dead-letter queue (SQS)."
+  value       = aws_sqs_queue.dlq.url
+}
+
+output "sender_email" {
+  description = "E-mail remetente das notificações (precisa estar verificado no SES)."
+  value       = var.sender_email
 }

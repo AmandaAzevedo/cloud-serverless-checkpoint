@@ -1,4 +1,3 @@
-# Copie para terraform.tfvars e ajuste se quiser.
-region        = "us-east-1"
-function_name = "chapeu-seletor-events"
-topic_name    = "alunos"
+region = "us-east-1"
+prefix = "chapeu-seletor-cp3"
+sender_email = "your-email@provider.com"

@@ -1,41 +1,23 @@
 variable "region" {
-  description = "Região da AWS onde a função será implantada."
+  description = "Região da AWS onde os recursos serão implantados."
   type        = string
   default     = "us-east-1"
 }
 
-variable "function_name" {
-  description = "Nome da função Lambda."
+variable "prefix" {
+  description = "Prefixo usado no nome de todos os recursos do cp3."
   type        = string
-  default     = "chapeu-seletor-events"
-}
-
-variable "topic_name" {
-  description = "Nome do tópico SNS que dispara a Lambda."
-  type        = string
-  default     = "alunos"
-}
-
-variable "publisher_name" {
-  description = "Nome da função Lambda produtora (endpoint HTTP que publica no SNS)."
-  type        = string
-  default     = "chapeu-seletor-publisher"
-}
-
-variable "lister_name" {
-  description = "Nome da função Lambda listadora (endpoint HTTP que lista os alunos)."
-  type        = string
-  default     = "chapeu-seletor-lister"
-}
-
-variable "table_name" {
-  description = "Nome da tabela DynamoDB com os alunos selecionados."
-  type        = string
-  default     = "alunos-selecionados"
+  default     = "chapeu-seletor-cp3"
 }
 
 variable "allowed_origins" {
-  description = "Origens permitidas no CORS da produtora. Use [\"*\"] para público."
+  description = "Origens permitidas no CORS dos endpoints HTTP. Use [\"*\"] para público."
   type        = list(string)
   default     = ["*"]
+}
+
+variable "sender_email" {
+  description = "E-mail remetente (From) verificado no SES para enviar as notificações."
+  type        = string
+  default     = ""
 }

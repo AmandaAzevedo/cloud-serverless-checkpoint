@@ -1,18 +1,15 @@
 """
-Chapéu Seletor Serverless — Checkpoint 2 (Event-Driven, AWS Lambda + SNS).
+Chapéu Seletor Serverless — Checkpoint 3 (Orquestração com AWS Step Functions).
 
-Três funções que compartilham este mesmo código:
+Uma ÚNICA Lambda expõe dois endpoints HTTP (Function URL):
+  * POST /v1/selecionar  → envia a entrada para o Step Functions e devolve o resultado.
+  * GET  /v1/alunos      → lista os alunos gravados (lê o DynamoDB).
 
-  * PRODUTORA   (handler: publisher_handler)
-      POST /v1/selecionar (HTTP) → publica a mensagem no tópico SNS. Responde 202.
+A orquestração (sortear a casa + persistir de forma idempotente) acontece
+inteiramente dentro do Step Functions, com integrações nativas (sem Lambda):
+sorteio via `States.MathRandom` e gravação via integração direta `dynamodb:putItem`.
 
-  * CONSUMIDORA (handler: lambda_handler)
-      Acionada pelo SNS. Sorteia a casa, grava no DynamoDB e registra no log.
-
-  * LISTADORA   (handler: lister_handler)
-      GET /v1/alunos (HTTP) → lê o DynamoDB e devolve todos os alunos e suas casas.
-
-Formato da mensagem/corpo JSON: { "nome": "Amanda" }
+Handler: lambda_function.lambda_handler
 """
 
 from __future__ import annotations
@@ -21,50 +18,24 @@ import base64
 import json
 import logging
 import os
-import random
-from datetime import datetime, timezone
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Casas de Hogwarts disponíveis para seleção.
-CASAS = ["Grifinória", "Sonserina", "Corvinal", "Lufa-Lufa"]
-
-# Rotas/métodos aceitos pelas funções HTTP.
 ROTA_SELECIONAR = "/v1/selecionar"
 ROTA_ALUNOS = "/v1/alunos"
 
-# Clientes AWS reutilizados entre invocações (criados sob demanda).
-_sns = None
+_sfn = None
 _dynamodb = None
 
 
-def selecionar_casa(nome: str) -> str:
-    """Seleciona uma casa aleatoriamente entre as quatro de Hogwarts."""
-    return random.choice(CASAS)
-
-
-def _nome_de_json(texto: str) -> str | None:
-    """Extrai o campo 'nome' de um texto JSON: { "nome": "Amanda" }."""
-    try:
-        dados = json.loads(texto)
-    except (ValueError, TypeError):
-        return None
-    if isinstance(dados, dict) and dados.get("nome"):
-        return str(dados["nome"])
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Clientes AWS (import tardio para não exigir boto3 nos testes).
-# ---------------------------------------------------------------------------
-def _sns_client():
-    global _sns
-    if _sns is None:
+def _sfn_client():
+    global _sfn
+    if _sfn is None:
         import boto3
 
-        _sns = boto3.client("sns")
-    return _sns
+        _sfn = boto3.client("stepfunctions")
+    return _sfn
 
 
 def _dynamodb_client():
@@ -77,50 +48,7 @@ def _dynamodb_client():
 
 
 # ---------------------------------------------------------------------------
-# CONSUMIDORA — acionada pelo SNS.
-# ---------------------------------------------------------------------------
-def _gravar_resultado(nome: str, casa: str) -> None:
-    """Grava (ou sobrescreve) o resultado do aluno no DynamoDB."""
-    tabela = os.environ.get("TABLE_NAME")
-    if not tabela:
-        return
-    _dynamodb_client().put_item(
-        TableName=tabela,
-        Item={
-            "nome": {"S": nome},
-            "casa": {"S": casa},
-            "atualizado_em": {"S": datetime.now(timezone.utc).isoformat()},
-        },
-    )
-
-
-def _processar_registro(registro: dict) -> dict | None:
-    """Processa um registro de evento do SNS e devolve o resultado (ou None)."""
-    mensagem = registro.get("Sns", {}).get("Message", "")
-    nome = _nome_de_json(mensagem)
-
-    if not nome or not nome.strip():
-        logger.warning("Mensagem ignorada (sem campo 'nome'): %s", mensagem)
-        return None
-
-    nome = nome.strip()
-    casa = selecionar_casa(nome)
-    resultado = {"nome": nome, "casa": casa}
-    _gravar_resultado(nome, casa)
-    logger.info("Aluno selecionado: %s", json.dumps(resultado, ensure_ascii=False))
-    return resultado
-
-
-def lambda_handler(event, context):
-    """Handler da CONSUMIDORA (eventos do SNS)."""
-    registros = event.get("Records", [])
-    resultados = [r for r in (_processar_registro(reg) for reg in registros) if r]
-    logger.info("Processadas %d mensagem(ns) do tópico.", len(resultados))
-    return {"processados": len(resultados), "resultados": resultados}
-
-
-# ---------------------------------------------------------------------------
-# Helpers HTTP (produtora e listadora).
+# Helpers HTTP.
 # ---------------------------------------------------------------------------
 def _metodo_http(event: dict) -> str | None:
     ctx = event.get("requestContext", {})
@@ -131,6 +59,13 @@ def _caminho(event: dict) -> str:
     ctx = event.get("requestContext", {})
     caminho = event.get("rawPath") or ctx.get("http", {}).get("path") or "/"
     return caminho.rstrip("/") or "/"
+
+
+def _corpo(event: dict) -> str:
+    corpo = event.get("body") or ""
+    if corpo and event.get("isBase64Encoded"):
+        corpo = base64.b64decode(corpo).decode("utf-8")
+    return corpo
 
 
 def _resposta_json(dados: dict, status: int = 200, headers: dict | None = None) -> dict:
@@ -145,71 +80,91 @@ def _resposta_json(dados: dict, status: int = 200, headers: dict | None = None) 
 
 
 # ---------------------------------------------------------------------------
-# PRODUTORA — recebe HTTP e publica no SNS.
+# POST /v1/selecionar → inicia a execução síncrona do Step Functions.
 # ---------------------------------------------------------------------------
-def publisher_handler(event, context):
-    """Handler da PRODUTORA (HTTP → publica no tópico SNS)."""
-    if _caminho(event) != ROTA_SELECIONAR:
-        return _resposta_json({"erro": f"Rota não encontrada. Use POST {ROTA_SELECIONAR}"}, 404)
+def _selecionar(event: dict) -> dict:
+    corpo = _corpo(event)
+    try:
+        dados = json.loads(corpo)
+    except (ValueError, TypeError):
+        dados = {}
+    if not isinstance(dados, dict):
+        dados = {}
 
-    if _metodo_http(event) != "POST":
-        return _resposta_json(
-            {"erro": f"Método não permitido. Use POST {ROTA_SELECIONAR}"},
-            405,
-            {"Allow": "POST"},
-        )
+    # Aceita: um aluno ("nome"+"email") ou uma lista ("alunos": [{"nome","email"}, ...]).
+    if isinstance(dados.get("alunos"), list):
+        entradas = [a for a in dados["alunos"] if isinstance(a, dict)]
+    elif dados.get("nome") or dados.get("email"):
+        entradas = [{"nome": dados.get("nome"), "email": dados.get("email")}]
+    else:
+        entradas = []
 
-    corpo = event.get("body") or ""
-    if corpo and event.get("isBase64Encoded"):
-        corpo = base64.b64decode(corpo).decode("utf-8")
+    if not entradas:
+        return _resposta_json({"erro": "Informe 'nome' e 'email' no corpo JSON."}, 400)
 
-    nome = _nome_de_json(corpo)
-    if not nome or not nome.strip():
-        return _resposta_json({"erro": "Informe o campo 'nome' no corpo JSON."}, 400)
+    # E-mail é obrigatório para todos os alunos.
+    alunos = []
+    for item in entradas:
+        nome = str(item.get("nome") or "").strip()
+        email = str(item.get("email") or "").strip()
+        if not nome or not email:
+            return _resposta_json({"erro": "'nome' e 'email' são obrigatórios."}, 400)
+        alunos.append({"nome": nome, "email": email})
 
-    nome = nome.strip()
-    resposta = _sns_client().publish(
-        TopicArn=os.environ["TOPIC_ARN"],
-        Message=json.dumps({"nome": nome}, ensure_ascii=False),
+    resposta = _sfn_client().start_sync_execution(
+        stateMachineArn=os.environ["STATE_MACHINE_ARN"],
+        input=json.dumps({"alunos": alunos}, ensure_ascii=False),
     )
-    message_id = resposta.get("MessageId")
-    logger.info("Publicado no tópico: nome=%s messageId=%s", nome, message_id)
 
+    if resposta.get("status") == "SUCCEEDED":
+        saida = json.loads(resposta.get("output") or "[]")
+        # Desembrulha quando há um único aluno.
+        resultado = saida[0] if isinstance(saida, list) and len(saida) == 1 else saida
+        return _resposta_json({"status": "ok", "resultado": resultado})
+
+    logger.error("Execução falhou: %s / %s", resposta.get("error"), resposta.get("cause"))
     return _resposta_json(
-        {
-            "status": "aceito",
-            "nome": nome,
-            "messageId": message_id,
-            "detalhe": "Processamento assíncrono; consulte GET /v1/alunos ou os logs.",
-        },
-        202,
+        {"status": "falha", "erro": resposta.get("error"), "causa": resposta.get("cause")}, 502
     )
 
 
 # ---------------------------------------------------------------------------
-# LISTADORA — lê o DynamoDB e devolve todos os alunos.
+# GET /v1/alunos → lista os alunos gravados.
 # ---------------------------------------------------------------------------
-def lister_handler(event, context):
-    """Handler da LISTADORA (HTTP GET → lista alunos e casas do DynamoDB)."""
-    if _caminho(event) != ROTA_ALUNOS:
-        return _resposta_json({"erro": f"Rota não encontrada. Use GET {ROTA_ALUNOS}"}, 404)
-
-    if _metodo_http(event) != "GET":
-        return _resposta_json(
-            {"erro": f"Método não permitido. Use GET {ROTA_ALUNOS}"},
-            405,
-            {"Allow": "GET"},
-        )
-
+def _listar() -> dict:
     tabela = os.environ["TABLE_NAME"]
     resposta = _dynamodb_client().scan(TableName=tabela)
     alunos = [
         {
             "nome": item["nome"]["S"],
+            "email": item.get("email", {}).get("S", ""),
             "casa": item["casa"]["S"],
-            "atualizado_em": item.get("atualizado_em", {}).get("S"),
+            "notificado": item.get("notificado", {}).get("BOOL", False),
+            "criado_em": item.get("criado_em", {}).get("S"),
         }
         for item in resposta.get("Items", [])
     ]
     alunos.sort(key=lambda a: a["nome"].lower())
     return _resposta_json({"total": len(alunos), "alunos": alunos})
+
+
+# ---------------------------------------------------------------------------
+# Handler único: roteia por caminho + método.
+# ---------------------------------------------------------------------------
+def lambda_handler(event, context):
+    metodo = _metodo_http(event)
+    caminho = _caminho(event)
+
+    if caminho == ROTA_SELECIONAR:
+        if metodo != "POST":
+            return _resposta_json({"erro": f"Use POST {ROTA_SELECIONAR}"}, 405, {"Allow": "POST"})
+        return _selecionar(event)
+
+    if caminho == ROTA_ALUNOS:
+        if metodo != "GET":
+            return _resposta_json({"erro": f"Use GET {ROTA_ALUNOS}"}, 405, {"Allow": "GET"})
+        return _listar()
+
+    return _resposta_json(
+        {"erro": f"Rota não encontrada. Use POST {ROTA_SELECIONAR} ou GET {ROTA_ALUNOS}"}, 404
+    )
